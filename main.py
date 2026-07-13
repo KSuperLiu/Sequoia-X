@@ -2,7 +2,7 @@
 
 两种运行模式：
   python main.py               # 日常模式：8进程增量补数据 + 跑策略 + 飞书推送（2~3分钟）
-  python main.py --backfill    # 回填模式：baostock 拉全市场历史K线（首次/补数据用，约12分钟）
+  python main.py --backfill    # 回填模式：只拉取本地市值表中 >=50亿股票的历史K线
 """
 
 import argparse
@@ -23,6 +23,7 @@ from sequoia_x.strategy.base import BaseStrategy
 from sequoia_x.strategy.high_tight_flag import HighTightFlagStrategy
 from sequoia_x.strategy.limit_up_shakeout import LimitUpShakeoutStrategy
 from sequoia_x.strategy.ma_volume import MaVolumeStrategy
+from sequoia_x.strategy.post_filter import StrategyPostFilter
 from sequoia_x.strategy.turtle_trade import TurtleTradeStrategy
 from sequoia_x.strategy.uptrend_limit_down import UptrendLimitDownStrategy
 from sequoia_x.strategy.rps_breakout import RpsBreakoutStrategy
@@ -34,7 +35,12 @@ def main() -> None:
     parser.add_argument(
         "--backfill",
         action="store_true",
-        help="回填模式：通过 baostock 拉取全市场历史 K 线（约12分钟）",
+        help="回填模式：通过 baostock 拉取本地市值表中总市值不低于 50 亿股票的历史 K 线",
+    )
+    parser.add_argument(
+        "--refresh-market-cap",
+        action="store_true",
+        help="联网刷新本地股票市值表，供后续采集离线过滤使用",
     )
     args = parser.parse_args()
 
@@ -48,6 +54,11 @@ def main() -> None:
 
         # 3. 初始化数据引擎
         engine = DataEngine(settings)
+
+        if args.refresh_market_cap:
+            count = engine.refresh_market_cap_table()
+            logger.info(f"本地股票市值表刷新完成，写入 {count} 只股票")
+            return
 
         if args.backfill:
             # ── 回填模式：单线程保守拉历史 K 线，自动多轮重跑 ──
@@ -75,13 +86,31 @@ def main() -> None:
 
         notifier = FeishuNotifier(settings)
 
-        # 5. 遍历策略，有结果则推送至对应机器人
+        # 5. 先收集所有策略原始结果，再统一做二次筛选，降低飞书噪音
+        raw_results: dict[str, list[str]] = {}
+        strategy_by_name: dict[str, BaseStrategy] = {}
         for strategy in strategies:
             strategy_name = type(strategy).__name__
+            strategy_by_name[strategy_name] = strategy
             logger.info(f"执行策略：{strategy_name}")
 
             selected: list[str] = strategy.run()
-            logger.info(f"{strategy_name} 选出 {len(selected)} 只股票")
+            raw_results[strategy_name] = selected
+            logger.info(f"{strategy_name} 原始选出 {len(selected)} 只股票")
+
+        post_filter = StrategyPostFilter(engine)
+        filtered_results = post_filter.filter_all(raw_results)
+
+        # 6. 有结果则推送至对应机器人
+        for strategy_name, decision in filtered_results.items():
+            strategy = strategy_by_name[strategy_name]
+            selected = decision.selected
+            raw_count = len(raw_results[strategy_name])
+            logger.info(
+                f"{strategy_name} 二次筛选：原始 {raw_count} 只，"
+                f"成交额过滤 {decision.dropped_low_turnover} 只，"
+                f"截断 {decision.truncated} 只，最终 {len(selected)} 只"
+            )
 
             if selected:
                 notifier.send(
