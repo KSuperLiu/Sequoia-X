@@ -61,7 +61,7 @@ function BacktestForm({ onSaved }: { onSaved: () => void }) {
     }
   };
   return <form className="panel inline-form" onSubmit={submit}>
-    <label>策略<select value={form.strategy_name} onChange={(e) => set("strategy_name", e.target.value)}><option>MaVolumeStrategy</option><option>TurtleTradeStrategy</option><option>HighTightFlagStrategy</option><option>LimitUpShakeoutStrategy</option><option>UptrendLimitDownStrategy</option><option>RpsBreakoutStrategy</option></select></label>
+    <label>策略<select value={form.strategy_name} onChange={(e) => set("strategy_name", e.target.value)}><option>MaVolumeStrategy</option><option>TurtleTradeStrategy</option><option>HighTightFlagStrategy</option><option>LimitUpShakeoutStrategy</option><option>RpsBreakoutStrategy</option></select></label>
     <label>开始<input type="date" value={form.start_date} onChange={(e) => set("start_date", e.target.value)} /></label>
     <label>结束<input type="date" value={form.end_date} onChange={(e) => set("end_date", e.target.value)} /></label>
     <label>初始资金<input type="number" value={form.initial_cash} onChange={(e) => set("initial_cash", +e.target.value)} /></label>

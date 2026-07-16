@@ -92,7 +92,6 @@ Compose 会启动 Caddy HTTPS、FastAPI 和独立日程 Worker。日程默认在
 | **MaVolume** | 均线+放量突破 |
 | **HighTightFlag** | 高而窄的旗形整理突破 |
 | **LimitUpShakeout** | 涨停洗盘回踩确认 |
-| **UptrendLimitDown** | 上升趋势中的跌停反包 |
 | **RpsBreakout** | 欧奈尔 RPS 相对强度突破 |
 
 ---
@@ -162,7 +161,6 @@ Sequoia-X/
 │   │   ├── ma_volume.py         # 均线放量策略
 │   │   ├── high_tight_flag.py   # 高窄旗形策略
 │   │   ├── limit_up_shakeout.py # 涨停洗盘策略
-│   │   ├── uptrend_limit_down.py # 上升跌停策略
 │   │   └── rps_breakout.py      # RPS 突破策略
 │   └── notify/
 │       └── feishu.py            # 飞书 Webhook 推送

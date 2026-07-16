@@ -20,7 +20,6 @@ SUPPORTED_STRATEGIES = {
     "TurtleTradeStrategy",
     "HighTightFlagStrategy",
     "LimitUpShakeoutStrategy",
-    "UptrendLimitDownStrategy",
     "RpsBreakoutStrategy",
 }
 
@@ -293,7 +292,6 @@ class BacktestService:
         prev_volume = group["volume"].shift(1)
         ma5 = group["close"].transform(lambda s: s.rolling(5).mean())
         ma20 = group["close"].transform(lambda s: s.rolling(20).mean())
-        ma60 = group["close"].transform(lambda s: s.rolling(60).mean())
         vol20 = group["volume"].transform(lambda s: s.rolling(20).mean())
         if strategy == "MaVolumeStrategy":
             previous_ma5 = ma5.groupby(df["symbol"]).shift(1)
@@ -319,11 +317,6 @@ class BacktestService:
             condition = (
                 (prev_close >= prev2_close * 1.095) & (df["close"] < df["open"])
                 & (df["volume"] > prev_volume * 2) & (df["low"] >= prev_close)
-            )
-        elif strategy == "UptrendLimitDownStrategy":
-            condition = (
-                (ma20.groupby(df["symbol"]).shift(1) > ma60.groupby(df["symbol"]).shift(1))
-                & (df["close"] <= prev_close * 0.905) & (df["volume"] > vol20 * 2)
             )
         elif strategy == "RpsBreakoutStrategy":
             close120 = group["close"].shift(120)

@@ -25,7 +25,6 @@ from sequoia_x.strategy.limit_up_shakeout import LimitUpShakeoutStrategy
 from sequoia_x.strategy.ma_volume import MaVolumeStrategy
 from sequoia_x.strategy.post_filter import StrategyPostFilter
 from sequoia_x.strategy.turtle_trade import TurtleTradeStrategy
-from sequoia_x.strategy.uptrend_limit_down import UptrendLimitDownStrategy
 from sequoia_x.strategy.rps_breakout import RpsBreakoutStrategy
 from sequoia_x.strategy.private_placement import PrivatePlacementStrategy
 from sequoia_x.app.db import AppDatabase
@@ -90,7 +89,6 @@ def main() -> None:
             TurtleTradeStrategy(engine=engine, settings=settings),
             HighTightFlagStrategy(engine=engine, settings=settings),
             LimitUpShakeoutStrategy(engine=engine, settings=settings),
-            UptrendLimitDownStrategy(engine=engine, settings=settings),
             RpsBreakoutStrategy(engine=engine, settings=settings),
             PrivatePlacementStrategy(engine=engine, settings=settings),
         ]

@@ -38,7 +38,6 @@ class StrategyPostFilter:
         "TurtleTradeStrategy": 15,
         "HighTightFlagStrategy": 10,
         "LimitUpShakeoutStrategy": 10,
-        "UptrendLimitDownStrategy": 10,
         "RpsBreakoutStrategy": 20,
         "PrivatePlacementStrategy": 10,
     }
