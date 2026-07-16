@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from sequoia_x.app.auth import AuthService, require_csrf, require_user
 from sequoia_x.app.backtest import SUPPORTED_STRATEGIES, BacktestService
+from sequoia_x.app.daily_job import DailyJobBusyError, get_daily_job, request_daily_job
 from sequoia_x.app.db import AppDatabase, utc_now
 from sequoia_x.app.domain import PositionZone, RuleConfig
 from sequoia_x.app.ledger import LedgerError, LedgerService
@@ -369,6 +370,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/runs")
     def runs(_: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
         return app_db.query_all("SELECT * FROM pipeline_run ORDER BY trade_date DESC,id DESC LIMIT 100")
+
+    @app.get("/api/v1/runs/status")
+    def daily_run_status(_: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+        return get_daily_job(app_db)
+
+    @app.post("/api/v1/runs/trigger", status_code=202)
+    def trigger_daily_run(user: dict[str, Any] = Depends(require_csrf)) -> dict[str, Any]:
+        try:
+            job = request_daily_job(app_db, user["username"])
+        except DailyJobBusyError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        app_db.audit(user["username"], "TRIGGER_DAILY_RUN", detail=job)
+        return job
 
     @app.get("/api/v1/rules")
     def rules(_: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:

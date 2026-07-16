@@ -43,3 +43,15 @@ def test_auth_csrf_and_account_flow(tmp_path: Path) -> None:
     assert created.status_code == 200
     accounts = client.get("/api/v1/accounts").json()
     assert accounts[0]["portfolio"]["cash"] == 100_000
+
+    assert client.post("/api/v1/runs/trigger").status_code == 403
+    triggered = client.post(
+        "/api/v1/runs/trigger", headers={"X-CSRF-Token": csrf}
+    )
+    assert triggered.status_code == 202
+    assert triggered.json()["status"] == "PENDING"
+    assert client.get("/api/v1/runs/status").json()["source"] == "MANUAL"
+    duplicate = client.post(
+        "/api/v1/runs/trigger", headers={"X-CSRF-Token": csrf}
+    )
+    assert duplicate.status_code == 409
