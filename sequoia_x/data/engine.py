@@ -66,6 +66,8 @@ class DataEngine:
     def __init__(self, settings: Settings) -> None:
         self.db_path: str = settings.db_path
         self.start_date: str = settings.start_date
+        self.min_market_cap: float = settings.min_market_cap
+        self.daily_run_time: str = settings.daily_run_time
         self._init_db()
 
     def _init_db(self) -> None:
@@ -86,14 +88,25 @@ class DataEngine:
             ).fetchone()
         return row[0] if row and row[0] else None
 
-    def get_ohlcv(self, symbol: str) -> pd.DataFrame:
+    def get_ohlcv(self, symbol: str, as_of_date: str | None = None) -> pd.DataFrame:
         with closing(sqlite3.connect(self.db_path)) as conn:
+            where = "WHERE symbol = ?"
+            params: tuple[str, ...] = (symbol,)
+            if as_of_date is not None:
+                where += " AND date <= ?"
+                params = (symbol, as_of_date)
             df = pd.read_sql(
-                "SELECT * FROM stock_daily WHERE symbol = ? ORDER BY date",
+                f"SELECT * FROM stock_daily {where} ORDER BY date",
                 conn,
-                params=(symbol,),
+                params=params,
             )
         return df
+
+    def get_latest_trade_date(self) -> str | None:
+        """返回本地行情库最新交易日。"""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute("SELECT MAX(date) FROM stock_daily").fetchone()
+        return str(row[0]) if row and row[0] else None
 
     @staticmethod
     def _to_baostock_code(symbol: str) -> str:
@@ -286,7 +299,7 @@ class DataEngine:
         with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
                 "SELECT symbol FROM stock_market_cap WHERE market_cap >= ?",
-                (_MIN_MARKET_CAP,),
+                (self.min_market_cap,),
             ).fetchall()
 
         if not rows:
@@ -295,7 +308,8 @@ class DataEngine:
 
         large_cap_symbols = {row[0] for row in rows}
         logger.info(
-            f"本地市值过滤完成：保留总市值 >= 50 亿股票 {len(large_cap_symbols)} 只"
+            f"本地市值过滤完成：保留总市值 >= {self.min_market_cap / 100_000_000:.0f} 亿"
+            f"股票 {len(large_cap_symbols)} 只"
         )
         return large_cap_symbols
 

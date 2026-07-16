@@ -64,7 +64,7 @@ class TurtleTradeStrategy(BaseStrategy):
 
         return market_caps
 
-    def run(self) -> list[str]:
+    def run(self, as_of_date: str | None = None) -> list[str]:
         """
         遍历全市场，返回满足海龟突破条件的股票代码列表。
         """
@@ -73,7 +73,7 @@ class TurtleTradeStrategy(BaseStrategy):
 
         for symbol in symbols:
             try:
-                df = self.engine.get_ohlcv(symbol)
+                df = self.engine.get_ohlcv(symbol, as_of_date=as_of_date)
                 if len(df) < self._MIN_BARS:
                     continue
 
@@ -103,7 +103,7 @@ class TurtleTradeStrategy(BaseStrategy):
                 continue
 
         # 按流通市值从大到小排序
-        if candidates:
+        if candidates and as_of_date is None:
             market_caps = self._get_market_caps(candidates)
             candidates.sort(key=lambda s: market_caps.get(s, 0), reverse=True)
 

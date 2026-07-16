@@ -24,7 +24,7 @@ class LimitUpShakeoutStrategy(BaseStrategy):
     webhook_key: str = "shakeout"
     _MIN_BARS: int = 3  # 至少需要 3 根 K 线（前日、昨日、今日）
 
-    def run(self) -> list[str]:
+    def run(self, as_of_date: str | None = None) -> list[str]:
         """
         遍历全市场，返回满足涨停洗盘条件的股票代码列表。
 
@@ -36,7 +36,7 @@ class LimitUpShakeoutStrategy(BaseStrategy):
 
         for symbol in symbols:
             try:
-                df = self.engine.get_ohlcv(symbol)
+                df = self.engine.get_ohlcv(symbol, as_of_date=as_of_date)
                 if len(df) < self._MIN_BARS:
                     continue
 

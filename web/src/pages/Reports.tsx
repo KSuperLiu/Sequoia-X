@@ -1,0 +1,6 @@
+import { useEffect, useState } from "react";
+import { api } from "../api";
+import { Empty, PageHeader } from "../components/Ui";
+
+type Report = { id: number; trade_date: string; title: string; created_at: string; summary: { candidate_count: number; eligible_count: number; action: string; zone_counts: Record<string, number> } };
+export default function Reports() { const [rows, setRows] = useState<Report[]>([]); useEffect(() => { api<Report[]>("/reports").then(setRows); }, []); return <><PageHeader title="复盘日报" subtitle="每日结论与候选快照永久归档，可直接打印或在飞书中打开" />{rows.length === 0 ? <Empty>暂无日报，完成一次日常跑数后会自动生成。</Empty> : <div className="report-grid">{rows.map((row) => <article className="report-card" key={row.id}><div className="report-date"><b>{row.trade_date.slice(8, 10)}</b><span>{row.trade_date.slice(0, 7)}</span></div><div><span className="eyebrow">DAILY BRIEF</span><h3>{row.title}</h3><p>{row.summary.action}</p><div className="report-tags"><span>{row.summary.candidate_count} 只候选</span><span>{row.summary.eligible_count} 只可执行</span><span>{row.summary.zone_counts.VETO || 0} 只否决</span></div></div><a className="secondary" href={`/api/v1/reports/${row.id}/html`} target="_blank" rel="noreferrer">打开完整日报 ↗</a></article>)}</div>}</>; }

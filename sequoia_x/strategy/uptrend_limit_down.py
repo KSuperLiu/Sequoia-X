@@ -23,7 +23,7 @@ class UptrendLimitDownStrategy(BaseStrategy):
     webhook_key: str = "limit_down"
     _MIN_BARS: int = 60  # 至少需要 60 根 K 线（60日均线）
 
-    def run(self) -> list[str]:
+    def run(self, as_of_date: str | None = None) -> list[str]:
         """
         遍历全市场，返回满足上升趋势跌停条件的股票代码列表。
 
@@ -35,7 +35,7 @@ class UptrendLimitDownStrategy(BaseStrategy):
 
         for symbol in symbols:
             try:
-                df = self.engine.get_ohlcv(symbol)
+                df = self.engine.get_ohlcv(symbol, as_of_date=as_of_date)
                 if len(df) < self._MIN_BARS:
                     continue
 

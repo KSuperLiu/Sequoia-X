@@ -47,11 +47,15 @@ class StrategyPostFilter:
     def __init__(self, engine: DataEngine) -> None:
         self.engine = engine
 
-    def filter_all(self, raw_results: dict[str, list[str]]) -> dict[str, FilterDecision]:
+    def filter_all(
+        self,
+        raw_results: dict[str, list[str]],
+        as_of_date: str | None = None,
+    ) -> dict[str, FilterDecision]:
         """批量过滤所有策略结果，利用全局共振信息排序。"""
         consensus = self._build_consensus(raw_results)
         return {
-            strategy_name: self.filter_one(strategy_name, symbols, consensus)
+            strategy_name: self.filter_one(strategy_name, symbols, consensus, as_of_date)
             for strategy_name, symbols in raw_results.items()
         }
 
@@ -60,6 +64,7 @@ class StrategyPostFilter:
         strategy_name: str,
         symbols: list[str],
         consensus: dict[str, int] | None = None,
+        as_of_date: str | None = None,
     ) -> FilterDecision:
         """过滤并排序单个策略结果。"""
         unique_symbols = list(dict.fromkeys(symbols))
@@ -81,7 +86,7 @@ class StrategyPostFilter:
         dropped_low_turnover = 0
 
         for symbol in unique_symbols:
-            metrics = self._latest_metrics(symbol)
+            metrics = self._latest_metrics(symbol, as_of_date)
             if metrics is None:
                 dropped_low_turnover += 1
                 continue
@@ -111,9 +116,11 @@ class StrategyPostFilter:
                 consensus[symbol] = consensus.get(symbol, 0) + 1
         return consensus
 
-    def _latest_metrics(self, symbol: str) -> dict[str, float] | None:
+    def _latest_metrics(
+        self, symbol: str, as_of_date: str | None = None
+    ) -> dict[str, float] | None:
         try:
-            df = self.engine.get_ohlcv(symbol)
+            df = self.engine.get_ohlcv(symbol, as_of_date=as_of_date)
         except Exception as exc:
             logger.warning(f"[{symbol}] 后处理读取行情失败：{exc}")
             return None

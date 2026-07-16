@@ -4,24 +4,38 @@ version = "2.0.0"
 requires-python = ">=3.10"
 dependencies = [
     "akshare>=1.10",
+    "argon2-cffi>=23.1",
     "baostock>=0.9",
+    "fastapi>=0.115",
     "pydantic-settings>=2.0",
     "python-dotenv>=1.0",
+    "python-multipart>=0.0.9",
     "rich>=13.0",
     "pandas>=2.0",
     "requests>=2.31",
+    "uvicorn[standard]>=0.30",
 ]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sequoia_x*"]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "hypothesis>=6.100",
+    "httpx2>=0.1",
     "pytest-mock>=3.12",
 ]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 
 [tool.pytest.ini_options]

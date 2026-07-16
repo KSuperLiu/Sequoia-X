@@ -18,8 +18,64 @@ Sequoia-X V2 是面向 A 股市场的量化选股系统，基于现代 Python �
 
 ```bash
 python main.py               # 日常模式：8进程增量补数据 + 跑策略 + 飞书推送（2~3分钟）
-python main.py --backfill     # 回填模式：全市场历史K线一次性灌入（约12分钟）
+python main.py --backfill     # 回填模式：按本地市值门槛回填历史K线
 ```
+
+## Web 交易追踪系统
+
+Web 系统在原有选股链路之上提供四维评分、真实价交易计划、候选追踪、模拟/实盘账本、HTML 日报和基础回测。历史行情仍存放在 `data/sequoia_v2.db`，新增业务数据独立存放在 `data/sequoia_app.db`。
+
+### 本机开发启动
+
+先在 `.env` 中至少配置：
+
+```dotenv
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=请设置强密码
+COOKIE_SECURE=false
+PUBLIC_BASE_URL=http://127.0.0.1:5173
+```
+
+安装 Python 和前端依赖：
+
+```powershell
+uv sync --extra dev
+cd web
+npm install
+cd ..
+```
+
+打开两个 PowerShell 窗口：
+
+```powershell
+# 窗口 1：FastAPI
+.\.venv\Scripts\python.exe -m uvicorn sequoia_x.app.api:app --host 127.0.0.1 --port 8000
+```
+
+```powershell
+# 窗口 2：React/Vite
+cd web
+npm run dev
+```
+
+浏览器访问 `http://127.0.0.1:5173`，使用 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 登录。
+
+### Docker 公网部署
+
+Linux 服务器安装 Docker 后，在 `.env` 中将 `COOKIE_SECURE` 设为 `true`，配置真实的 `DOMAIN`、`PUBLIC_BASE_URL`、管理员强密码和飞书 Webhook，然后执行：
+
+```bash
+sudo chown -R 10001:10001 data logs backups
+docker compose up -d --build
+```
+
+Compose 会启动 Caddy HTTPS、FastAPI 和独立日程 Worker。日程默认在交易日 18:30 运行；应用库每日备份 30 份，行情库每周备份 4 份。
+
+### 常用地址
+
+- API 健康检查：`/health`
+- OpenAPI 文档：设置 `ENABLE_API_DOCS=true` 后访问 `/docs`；公网默认关闭
+- Web API 前缀：`/api/v1`
 
 ---
 

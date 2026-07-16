@@ -23,8 +23,11 @@ class PrivatePlacementStrategy(BaseStrategy):
     webhook_key: str = "private_placement"
     _LOOKBACK_DAYS: int = 7  # 回看天数，覆盖一周内的新公告
 
-    def run(self) -> list[str]:
+    def run(self, as_of_date: str | None = None) -> list[str]:
         """拉取定增公告，返回近期有定向增发的股票代码列表。"""
+        if as_of_date is not None and as_of_date != date.today().isoformat():
+            logger.info("PrivatePlacementStrategy 不支持历史公告回放，跳过")
+            return []
         try:
             import akshare as ak
 

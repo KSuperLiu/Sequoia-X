@@ -28,6 +28,8 @@ from sequoia_x.strategy.turtle_trade import TurtleTradeStrategy
 from sequoia_x.strategy.uptrend_limit_down import UptrendLimitDownStrategy
 from sequoia_x.strategy.rps_breakout import RpsBreakoutStrategy
 from sequoia_x.strategy.private_placement import PrivatePlacementStrategy
+from sequoia_x.app.db import AppDatabase
+from sequoia_x.app.pipeline import DailyTrackingService
 
 
 def main() -> None:
@@ -35,7 +37,7 @@ def main() -> None:
     parser.add_argument(
         "--backfill",
         action="store_true",
-        help="回填模式：通过 baostock 拉取本地市值表中总市值不低于 50 亿股票的历史 K 线",
+        help="回填模式：按应用设置中的市值门槛拉取历史 K 线（默认不低于 50 亿）",
     )
     parser.add_argument(
         "--refresh-market-cap",
@@ -47,6 +49,15 @@ def main() -> None:
     try:
         # 1. 初始化配置
         settings = get_settings()
+
+        # Web 设置页保存的股票池阈值同时作用于日常、回填与手动刷新入口。
+        app_db = None
+        app_db_path = getattr(settings, "app_db_path", None)
+        if app_db_path:
+            app_db = AppDatabase(app_db_path)
+            configured_market_cap = app_db.get_setting("min_market_cap")
+            if configured_market_cap is not None:
+                object.__setattr__(settings, "min_market_cap", float(configured_market_cap))
 
         # 2. 初始化日志
         logger = get_logger(__name__)
@@ -101,7 +112,21 @@ def main() -> None:
         post_filter = StrategyPostFilter(engine)
         filtered_results = post_filter.filter_all(raw_results)
 
-        # 6. 有结果则推送至对应机器人
+        # 6. 将策略结果固化为 Web 候选、交易计划和日报。
+        # 追踪层故障不得破坏既有飞书选股链路。
+        tracking_summary = None
+        try:
+            app_db = app_db or AppDatabase(settings.app_db_path)
+            tracking = DailyTrackingService(app_db, engine)
+            tracking_summary = tracking.persist(raw_results, filtered_results)
+            logger.info(
+                f"交易追踪日报生成完成：{tracking_summary['trade_date']}，"
+                f"候选 {tracking_summary['candidate_count']} 只"
+            )
+        except Exception:
+            logger.exception("交易追踪层执行失败，继续既有飞书推送")
+
+        # 7. 有结果则推送至对应机器人
         for strategy_name, decision in filtered_results.items():
             strategy = strategy_by_name[strategy_name]
             selected = decision.selected
@@ -120,6 +145,9 @@ def main() -> None:
                 )
             else:
                 logger.info(f"{strategy_name} 无选股结果，跳过推送")
+
+        if tracking_summary:
+            notifier.send_daily_summary(tracking_summary)
 
     except Exception:
         try:

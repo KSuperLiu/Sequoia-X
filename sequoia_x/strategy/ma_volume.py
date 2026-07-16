@@ -21,7 +21,7 @@ class MaVolumeStrategy(BaseStrategy):
 
     webhook_key: str = "ma_volume"
 
-    def run(self) -> list[str]:
+    def run(self, as_of_date: str | None = None) -> list[str]:
         """
         遍历全市场，返回满足均线金叉+放量条件的股票代码列表。
 
@@ -33,7 +33,7 @@ class MaVolumeStrategy(BaseStrategy):
 
         for symbol in symbols:
             try:
-                df = self.engine.get_ohlcv(symbol)
+                df = self.engine.get_ohlcv(symbol, as_of_date=as_of_date)
                 if len(df) < 20:
                     continue
 

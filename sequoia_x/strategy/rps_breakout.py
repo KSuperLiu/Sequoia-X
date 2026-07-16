@@ -13,10 +13,17 @@ class RpsBreakoutStrategy(BaseStrategy):
     rps_period: int = 120
     rps_threshold: int = 90
 
-    def run(self) -> list[str]:
+    def run(self, as_of_date: str | None = None) -> list[str]:
         try:
             with sqlite3.connect(self.engine.db_path) as conn:
-                df = pd.read_sql("SELECT symbol, date, close, high FROM stock_daily", conn)
+                if as_of_date is None:
+                    df = pd.read_sql("SELECT symbol, date, close, high FROM stock_daily", conn)
+                else:
+                    df = pd.read_sql(
+                        "SELECT symbol, date, close, high FROM stock_daily WHERE date<=?",
+                        conn,
+                        params=(as_of_date,),
+                    )
         except Exception as exc:
             logger.error(f"读取数据库失败: {exc}")
             return []

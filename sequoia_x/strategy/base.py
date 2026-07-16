@@ -31,7 +31,7 @@ class BaseStrategy(ABC):
         self.settings = settings
 
     @abstractmethod
-    def run(self) -> list[str]:
+    def run(self, as_of_date: str | None = None) -> list[str]:
         """
         执行选股逻辑，返回选中的股票代码列表。
 

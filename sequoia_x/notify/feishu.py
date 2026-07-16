@@ -138,3 +138,35 @@ class FeishuNotifier:
 
         except requests.RequestException as exc:
             logger.error(f"飞书推送请求异常 [{webhook_key}]：{exc}")
+
+    def send_daily_summary(self, summary: dict) -> None:
+        """推送交易追踪日报摘要和 Web 链接。"""
+        base_url = self.settings.public_base_url.rstrip("/")
+        trade_date = summary.get("trade_date", "")
+        zones = summary.get("zone_counts", {})
+        content = (
+            f"**日期：** {trade_date}\n"
+            f"**候选：** {summary.get('candidate_count', 0)} 只\n"
+            f"**位置：** 左侧 {zones.get('LEFT', 0)} / 中部 {zones.get('MIDDLE', 0)} / "
+            f"右侧 {zones.get('RIGHT', 0)} / 否决 {zones.get('VETO', 0)}\n"
+            f"**今日操作：** {summary.get('action', '无')}\n"
+            f"[打开 Sequoia-X 日报]({base_url}/reports)"
+        )
+        payload = {
+            "msg_type": "interactive",
+            "card": {
+                "header": {
+                    "title": {"tag": "plain_text", "content": "📊 Sequoia-X 每日决策摘要"},
+                    "template": "blue",
+                },
+                "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
+            },
+        }
+        url = self.settings.get_webhook_url("default")
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+            body = response.json()
+            if response.status_code != 200 or body.get("code") != 0:
+                logger.error(f"飞书日报摘要推送失败：{response.text}")
+        except (requests.RequestException, ValueError) as exc:
+            logger.error(f"飞书日报摘要推送异常：{exc}")

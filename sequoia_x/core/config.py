@@ -5,9 +5,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     db_path: str = "data/sequoia_v2.db"
+    app_db_path: str = "data/sequoia_app.db"
     start_date: str = "2024-01-01"
     feishu_webhook_url: str  # 必填字段，缺失时抛出 ValidationError
     strategy_webhooks: dict[str, str] = {}
+    admin_username: str = "admin"
+    admin_password: str = ""
+    session_secret: str = ""
+    cookie_secure: bool = False
+    enable_api_docs: bool = False
+    public_base_url: str = "http://localhost:8080"
+    daily_run_time: str = "18:30"
+    min_market_cap: float = 5_000_000_000
 
     model_config = SettingsConfigDict(
         env_file=".env",

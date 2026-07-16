@@ -26,6 +26,10 @@ data/*.db
 *.egg-info/
 dist/
 build/
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+backups/
 
 # 测试与工具缓存
 .pytest_cache/

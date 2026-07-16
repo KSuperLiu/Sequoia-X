@@ -23,7 +23,7 @@ class HighTightFlagStrategy(BaseStrategy):
     webhook_key: str = "flag"
     _MIN_BARS: int = 40  # 至少需要 40 根 K 线
 
-    def run(self) -> list[str]:
+    def run(self, as_of_date: str | None = None) -> list[str]:
         """
         遍历全市场，返回满足高旗形整理条件的股票代码列表。
 
@@ -35,7 +35,7 @@ class HighTightFlagStrategy(BaseStrategy):
 
         for symbol in symbols:
             try:
-                df = self.engine.get_ohlcv(symbol)
+                df = self.engine.get_ohlcv(symbol, as_of_date=as_of_date)
                 if len(df) < self._MIN_BARS:
                     continue
 
