@@ -40,4 +40,8 @@
 ### 发布信息
 
 - 目标环境：生产服务器 `/opt/sequoia-x`，公网入口 `http://172.93.187.65/`。
-- 发布路径：`codex/pro-workbench` 合并至 `codex/sequoia-trading-tracker`；提交哈希、数据库迁移和最终验收结果将在部署完成后补记。
+- 发布路径：功能分支 `codex/pro-workbench` 的提交 `59f53b7` 通过 PR #3 合并至生产分支 `codex/sequoia-trading-tracker`，生产部署提交为 `5e3f7ed352f459d783604d1a5940bcfa2a065d49`。
+- 部署前一致性备份：`sequoia_app_predeploy_20260718_003757.db`、`sequoia_v2_predeploy_20260718_003757.db`。
+- 数据库迁移：成功应用版本 2 `job_cancellation`，`job_run` 已新增取消请求相关字段。
+- 部署验收：API、Worker、Web 容器均正常运行，API 健康检查和公网首页均返回 HTTP 200，行情最新日期为 `2026-07-17`。
+- 运行状态：部署后没有等待中或运行中的残留任务，最近日志及内核日志未发现严重错误或 OOM。
