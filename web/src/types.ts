@@ -115,5 +115,6 @@ export interface TradePlan {
 export interface JobRun {
   id: number; job_type: string; source: string; status: string; requested_by: string; requested_at: string;
   started_at?: string; finished_at?: string; current_stage?: string; progress_current: number; progress_total: number;
-  message?: string; exit_code?: number; logs?: Array<{ id: number; level: string; message: string; created_at: string }>;
+  message?: string; exit_code?: number; cancel_requested?: number; cancel_requested_at?: string; cancel_requested_by?: string;
+  logs?: Array<{ id: number; level: string; message: string; created_at: string }>;
 }

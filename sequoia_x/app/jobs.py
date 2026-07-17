@@ -6,12 +6,15 @@ from typing import Any
 
 from sequoia_x.app.db import AppDatabase, utc_now
 
-
 JOB_TYPES = {"DAILY_UPDATE", "REFRESH_MARKET_CAP", "BACKFILL"}
 ACTIVE_STATUSES = {"PENDING", "RUNNING"}
 
 
 class JobBusyError(RuntimeError):
+    pass
+
+
+class JobCancellationError(RuntimeError):
     pass
 
 
@@ -116,14 +119,78 @@ def finish_job(db: AppDatabase, job_id: int, exit_code: int, message: str | None
         )
 
 
+def request_job_cancel(db: AppDatabase, job_id: int, actor: str) -> dict[str, Any]:
+    """取消网页手动任务；等待任务立即取消，运行任务交由 Worker 停止进程。"""
+    now = utc_now()
+    with db.transaction() as conn:
+        row = conn.execute("SELECT * FROM job_run WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise JobCancellationError("任务不存在")
+        if row["source"] != "MANUAL":
+            raise JobCancellationError("仅允许中止网页手动启动的任务")
+        if row["status"] == "PENDING":
+            message = f"任务在启动前由 {actor} 中止"
+            conn.execute(
+                "UPDATE job_run SET status='CANCELLED',finished_at=?,exit_code=-15,"
+                "current_stage='已取消',message=?,cancel_requested=1,cancel_requested_at=?,"
+                "cancel_requested_by=? WHERE id=? AND status='PENDING'",
+                (now, message, now, actor, job_id),
+            )
+        elif row["status"] == "RUNNING":
+            if row["cancel_requested"]:
+                raise JobCancellationError("任务正在中止，请稍候")
+            message = f"{actor} 已请求中止，正在停止任务进程"
+            conn.execute(
+                "UPDATE job_run SET cancel_requested=1,cancel_requested_at=?,"
+                "cancel_requested_by=?,message=?,current_stage='正在中止' "
+                "WHERE id=? AND status='RUNNING'",
+                (now, actor, message, job_id),
+            )
+        else:
+            raise JobCancellationError("只有等待中或运行中的任务可以中止")
+        conn.execute(
+            "INSERT INTO job_log(job_run_id,level,message,created_at) VALUES (?,?,?,?)",
+            (job_id, "WARNING", message, now),
+        )
+    return get_job(db, job_id) or {}
+
+
+def is_cancel_requested(db: AppDatabase, job_id: int) -> bool:
+    row = db.query_one("SELECT cancel_requested FROM job_run WHERE id=?", (job_id,))
+    return bool(row and row["cancel_requested"])
+
+
+def finish_cancelled_job(db: AppDatabase, job_id: int, exit_code: int = -15) -> None:
+    message = "任务已按管理员请求中止"
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE job_run SET status='CANCELLED',finished_at=?,exit_code=?,"
+            "current_stage='已取消',message=? WHERE id=?",
+            (utc_now(), exit_code, message, job_id),
+        )
+        conn.execute(
+            "INSERT INTO job_log(job_run_id,level,message,created_at) VALUES (?,?,?,?)",
+            (job_id, "WARNING", message, utc_now()),
+        )
+
+
 def fail_interrupted_jobs(db: AppDatabase) -> None:
     with db.transaction() as conn:
-        rows = conn.execute("SELECT id FROM job_run WHERE status='RUNNING'").fetchall()
+        rows = conn.execute(
+            "SELECT id,cancel_requested FROM job_run WHERE status='RUNNING'"
+        ).fetchall()
         for row in rows:
-            conn.execute(
-                "UPDATE job_run SET status='FAILED',finished_at=?,exit_code=-1,message=? WHERE id=?",
-                (utc_now(), "Worker 重启，上一次任务已中断", row["id"]),
-            )
+            if row["cancel_requested"]:
+                conn.execute(
+                    "UPDATE job_run SET status='CANCELLED',finished_at=?,exit_code=-15,"
+                    "current_stage='已取消',message=? WHERE id=?",
+                    (utc_now(), "Worker 重启时确认任务已中止", row["id"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE job_run SET status='FAILED',finished_at=?,exit_code=-1,message=? WHERE id=?",
+                    (utc_now(), "Worker 重启，上一次任务已中断", row["id"]),
+                )
 
 
 def get_job(db: AppDatabase, job_id: int) -> dict[str, Any] | None:

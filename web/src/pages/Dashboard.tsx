@@ -23,10 +23,10 @@ export default function Dashboard() {
     <PageHeader title="核心决策工作台" subtitle={data.run ? `${data.run.trade_date} 收盘数据 · 决策、计划与账户风险一屏掌握` : "尚未生成追踪日报"} actions={<><span className={`freshness ${data.data_stale ? "stale" : "fresh"}`}>{data.data_stale ? "数据待更新" : "数据已校验"}</span><button className="primary icon-button" onClick={trigger} disabled={data.latest_job?.status === "RUNNING" || data.latest_job?.status === "PENDING"}><RefreshCw size={15} />{data.latest_job?.status === "RUNNING" ? "更新中" : "更新数据"}</button></>} />
     {data.data_stale && <div className="warning-banner"><ShieldAlert size={16} /> 行情数据未通过新鲜度校验，可查看历史结果，但不可执行仓位建议。<button onClick={() => navigate("/tasks")}>查看任务</button></div>}
     <section className="kpi-grid">
-      <Kpi label="今日候选" value={summary?.candidate_count || 0} note="点击查看全部机会" onClick={() => navigate("/candidates")} />
-      <Kpi label="左侧机会" value={zones.LEFT} tone="green" note="完整建议仓位" onClick={() => navigate("/candidates?zone=LEFT")} />
-      <Kpi label="中部机会" value={zones.MIDDLE} tone="orange" note="50% 试仓" onClick={() => navigate("/candidates?zone=MIDDLE")} />
-      <Kpi label="待执行计划" value={data.ready_plan_count || 0} tone="red" note="进入计划中心处理" onClick={() => navigate("/plans?status=READY")} />
+      <Kpi label="覆盖标的" value={summary?.candidate_count || 0} note="今日策略候选集合" onClick={() => navigate("/candidates")} />
+      <Kpi label="左侧机会" value={zones.LEFT} tone="green" note="标准仓位观察" onClick={() => navigate("/candidates?zone=LEFT")} />
+      <Kpi label="中部机会" value={zones.MIDDLE} tone="orange" note="仅允许小仓试错" onClick={() => navigate("/candidates?zone=MIDDLE")} />
+      <Kpi label="右侧 / 否决" value={zones.RIGHT + zones.VETO} tone="red" note="不追高、不执行" onClick={() => navigate("/candidates?zone=RIGHT%2CVETO")} />
     </section>
     <section className="dashboard-grid">
       <article className="panel decision-panel"><div className="panel-title"><div><Star size={17} /><h2>今日判断</h2></div><span className="date-chip">{data.run?.trade_date || "等待日跑"}</span></div><div className="decision-line"><span>总体策略</span><strong className={summary?.eligible_count ? "positive" : "negative"}>{summary?.action || "等待数据"}</strong></div><div className="decision-line"><span>风险约束</span><b>单笔 1% · 总仓位 60% · 最多 5 只</b></div><div className="distribution"><div className="bar"><i className="left" style={{ width: `${zones.LEFT / total * 100}%` }} /><i className="middle" style={{ width: `${zones.MIDDLE / total * 100}%` }} /><i className="right" style={{ width: `${(zones.RIGHT + zones.VETO) / total * 100}%` }} /></div><div className="legend"><span><i className="left" />左侧 {zones.LEFT}</span><span><i className="middle" />中部 {zones.MIDDLE}</span><span><i className="right" />右侧/否决 {zones.RIGHT + zones.VETO}</span></div></div></article>

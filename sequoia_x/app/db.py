@@ -361,7 +361,10 @@ CREATE TABLE IF NOT EXISTS job_run (
     progress_total INTEGER NOT NULL DEFAULT 0,
     message TEXT,
     exit_code INTEGER,
-    retry_of INTEGER REFERENCES job_run(id)
+    retry_of INTEGER REFERENCES job_run(id),
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    cancel_requested_at TEXT,
+    cancel_requested_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_job_run_status_id ON job_run(status, id);
 
@@ -415,6 +418,21 @@ class AppDatabase:
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migration(version,name,applied_at) VALUES (1,?,?)",
                 ("professional_workbench", utc_now()),
+            )
+            job_columns = {
+                str(row["name"]) for row in conn.execute("PRAGMA table_info(job_run)").fetchall()
+            }
+            if "cancel_requested" not in job_columns:
+                conn.execute(
+                    "ALTER TABLE job_run ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0"
+                )
+            if "cancel_requested_at" not in job_columns:
+                conn.execute("ALTER TABLE job_run ADD COLUMN cancel_requested_at TEXT")
+            if "cancel_requested_by" not in job_columns:
+                conn.execute("ALTER TABLE job_run ADD COLUMN cancel_requested_by TEXT")
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migration(version,name,applied_at) VALUES (2,?,?)",
+                ("job_cancellation", utc_now()),
             )
             conn.commit()
         self.ensure_default_rule()

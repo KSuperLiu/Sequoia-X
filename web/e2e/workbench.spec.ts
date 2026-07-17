@@ -14,6 +14,7 @@ test.beforeEach(async ({ page }) => {
       "/api/v1/system/health": { market_cap_count: 0, market_db_size: 0, app_db_size: 0, watchlist_count: 0 },
     };
     if (path === "/api/v1/candidates/search") return route.fulfill({ json: emptyPage });
+    if (path === "/api/v1/stocks/688321") return route.fulfill({ json: { symbol: "688321", profile: { name: "微芯生物", industry: "医药制造业" }, snapshot: { close: 24.88, date: "2026-07-16", trade_status: 1 }, bars: [], candidates: [], fills: [], positions: [] } });
     if (path === "/api/v1/analytics/candidates") return route.fulfill({ json: [] });
     const value = responses[path];
     return value === undefined ? route.fulfill({ status: 404, json: { detail: "mock not found" } }) : route.fulfill({ json: value });
@@ -30,4 +31,58 @@ test("核心工作台导航均可进入真实页面", async ({ page }) => {
     await page.getByRole("link", { name: link }).click();
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
   }
+});
+
+test("首页机会指标卡跳转并带入候选位置筛选", async ({ page }) => {
+  await page.goto("/dashboard");
+
+  await page.getByRole("button", { name: /左侧机会/ }).click();
+  await expect(page).toHaveURL(/\/candidates\?zone=LEFT$/);
+  await expect(page.getByLabel("位置筛选")).toHaveValue("LEFT");
+
+  await page.goto("/dashboard");
+  await page.getByRole("button", { name: /中部机会/ }).click();
+  await expect(page).toHaveURL(/\/candidates\?zone=MIDDLE$/);
+  await expect(page.getByLabel("位置筛选")).toHaveValue("MIDDLE");
+
+  await page.goto("/dashboard");
+  await page.getByRole("button", { name: /右侧 \/ 否决/ }).click();
+  await expect(page).toHaveURL(/\/candidates\?zone=RIGHT(%2C|,)VETO$/);
+  await expect(page.getByLabel("位置筛选")).toHaveValue("RIGHT,VETO");
+
+  await page.goto("/dashboard");
+  await page.getByRole("button", { name: /覆盖标的/ }).click();
+  await expect(page).toHaveURL(/\/candidates$/);
+  await expect(page.getByLabel("位置筛选")).toHaveValue("");
+});
+
+test("股票详情名称链接到对应雪球行情页", async ({ page }) => {
+  await page.goto("/stocks/688321");
+  const link = page.getByRole("link", { name: "在雪球查看微芯生物" });
+  await expect(link).toHaveAttribute("href", "https://xueqiu.com/S/SH688321");
+  await expect(link).toHaveAttribute("target", "_blank");
+  await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+});
+
+test("网页手动任务可以从任务中心中止", async ({ page }) => {
+  let status = "PENDING";
+  let cancelCalled = false;
+  const job = { id: 7, job_type: "DAILY_UPDATE", source: "MANUAL", requested_by: "admin", requested_at: "2026-07-18T01:00:00Z", progress_current: 0, progress_total: 0, message: "已加入队列" };
+  await page.route("**/api/v1/jobs**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/jobs/7/cancel" && request.method() === "POST") {
+      cancelCalled = true;
+      status = "CANCELLED";
+      return route.fulfill({ json: { ...job, status, exit_code: -15 } });
+    }
+    if (path === "/api/v1/jobs") return route.fulfill({ json: [{ ...job, status }] });
+    return route.fallback();
+  });
+  page.on("dialog", (dialog) => dialog.accept());
+
+  await page.goto("/tasks");
+  await page.getByRole("button", { name: "中止" }).click();
+  await expect(page.getByText("等待任务已取消")).toBeVisible();
+  expect(cancelCalled).toBe(true);
 });

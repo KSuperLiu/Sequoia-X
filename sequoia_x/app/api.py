@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
-import sqlite3
 import csv
 import io
-from pathlib import Path
+import json
+import sqlite3
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
@@ -15,13 +15,20 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from sequoia_x.app.auth import AuthService, require_csrf, require_user
-from sequoia_x.app.backup import backup_sqlite
 from sequoia_x.app.backtest import SUPPORTED_STRATEGIES, BacktestService
+from sequoia_x.app.backup import backup_sqlite
 from sequoia_x.app.daily_job import get_daily_job
 from sequoia_x.app.db import AppDatabase, utc_now
 from sequoia_x.app.domain import PositionZone, RuleConfig
+from sequoia_x.app.jobs import (
+    JobBusyError,
+    JobCancellationError,
+    enqueue_job,
+    get_job,
+    latest_job,
+    request_job_cancel,
+)
 from sequoia_x.app.ledger import LedgerError, LedgerService
-from sequoia_x.app.jobs import JobBusyError, enqueue_job, get_job, latest_job
 from sequoia_x.app.scoring import suggested_quantity
 from sequoia_x.core.config import Settings, get_settings
 from sequoia_x.data.engine import DataEngine
@@ -248,8 +255,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         clauses = ["c.trade_date=?", "c.total_score>=?"]
         params: list[Any] = [trade_date, min_score]
         if zone:
-            clauses.append("c.zone=?")
-            params.append(zone)
+            zones = [value.strip() for value in zone.split(",") if value.strip()]
+            if not zones or any(value not in PositionZone._value2member_map_ for value in zones):
+                raise HTTPException(422, "无效的位置筛选")
+            clauses.append(f"c.zone IN ({','.join('?' for _ in zones)})")
+            params.extend(zones)
         if lifecycle:
             clauses.append("c.lifecycle_status=?")
             params.append(lifecycle)
@@ -320,8 +330,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"items": [], "total": 0, "page": page, "page_size": page_size, "facets": {}}
         clauses = ["c.trade_date=?", "c.total_score>=?"]
         params: list[Any] = [trade_date, min_score]
+        if zone:
+            zones = [value.strip() for value in zone.split(",") if value.strip()]
+            if not zones or any(value not in PositionZone._value2member_map_ for value in zones):
+                raise HTTPException(422, "无效的位置筛选")
+            clauses.append(f"p.current_zone IN ({','.join('?' for _ in zones)})")
+            params.extend(zones)
         filters = {
-            "zone": ("p.current_zone=?", zone),
             "lifecycle": ("c.lifecycle_status=?", lifecycle),
             "confidence": ("c.confidence=?", confidence),
             "plan_status": ("p.status=?", plan_status),
@@ -900,6 +915,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return enqueue_job(app_db, str(old["job_type"]), user["username"], retry_of=job_id)
         except JobBusyError as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/v1/jobs/{job_id}/cancel", status_code=202)
+    def cancel_job(job_id: int, user: dict[str, Any] = Depends(require_csrf)) -> dict[str, Any]:
+        if get_job(app_db, job_id) is None:
+            raise HTTPException(404, "任务不存在")
+        try:
+            job = request_job_cancel(app_db, job_id, user["username"])
+        except JobCancellationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        app_db.audit(
+            user["username"], "CANCEL_JOB", "job_run", job_id,
+            {"status": job.get("status"), "job_type": job.get("job_type")},
+        )
+        return job
 
     @app.get("/api/v1/rules")
     def rules(_: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:

@@ -1,7 +1,7 @@
 import { ReactNode } from "react";
 import { Inbox, X } from "lucide-react";
 
-export function PageHeader({ title, subtitle, actions }: { title: string; subtitle: string; actions?: ReactNode }) {
+export function PageHeader({ title, subtitle, actions }: { title: ReactNode; subtitle: string; actions?: ReactNode }) {
   return <header className="page-header"><div><span className="eyebrow">SEQUOIA-X</span><h1>{title}</h1><p>{subtitle}</p></div>{actions && <div className="page-actions">{actions}</div>}</header>;
 }
 
@@ -22,6 +22,6 @@ export function Modal({ title, onClose, children, wide = false }: { title: strin
 }
 
 export function StatusBadge({ status }: { status: string }) {
-  const labels: Record<string, string> = { PENDING: "等待中", RUNNING: "运行中", SUCCEEDED: "成功", PARTIAL: "部分成功", FAILED: "失败", DRAFT: "草稿", READY: "待执行", EXECUTED: "已执行", CANCELLED: "已取消", EXPIRED: "已过期" };
-  return <span className={`status ${status.toLowerCase()}`}>{labels[status] || status}</span>;
+  const labels: Record<string, string> = { PENDING: "等待中", RUNNING: "运行中", CANCELLING: "正在中止", SUCCEEDED: "成功", PARTIAL: "部分成功", FAILED: "失败", DRAFT: "草稿", READY: "待执行", EXECUTED: "已执行", CANCELLED: "已取消", EXPIRED: "已过期" };
+  return <span className={`status ${status === "CANCELLING" ? "running" : status.toLowerCase()}`}>{labels[status] || status}</span>;
 }

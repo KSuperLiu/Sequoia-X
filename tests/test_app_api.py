@@ -1,7 +1,7 @@
 """FastAPI 登录、CSRF 与账户接口测试。"""
 
-from pathlib import Path
 import sqlite3
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -56,6 +56,15 @@ def test_auth_csrf_and_account_flow(tmp_path: Path) -> None:
         "/api/v1/runs/trigger", headers={"X-CSRF-Token": csrf}
     )
     assert duplicate.status_code == 409
+    assert client.post(f"/api/v1/jobs/{triggered.json()['id']}/cancel").status_code == 403
+    cancelled = client.post(
+        f"/api/v1/jobs/{triggered.json()['id']}/cancel",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert cancelled.status_code == 202
+    assert cancelled.json()["status"] == "CANCELLED"
+    assert cancelled.json()["exit_code"] == -15
+    assert client.get("/api/v1/runs/status").json()["status"] == "CANCELLED"
 
 
 def test_watchlist_jobs_and_system_endpoints(tmp_path: Path) -> None:

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, BriefcaseBusiness, ClipboardList, Star } from "lucide-react";
+import { ArrowLeft, BriefcaseBusiness, ClipboardList, ExternalLink, Star } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, money, pct } from "../api";
 import StockChart from "../components/StockChart";
@@ -15,6 +15,15 @@ type Detail = {
   positions: Array<{ account_name: string; quantity: number; average_cost: number; last_price: number; unrealized_pnl: number; return_pct: number; stop_price?: number; stop_distance?: number }>;
 };
 
+function xueqiuUrl(symbol: string) {
+  const market = symbol.startsWith("4") || symbol.startsWith("8") || symbol.startsWith("92")
+    ? "BJ"
+    : symbol.startsWith("6") || symbol.startsWith("9")
+      ? "SH"
+      : "SZ";
+  return `https://xueqiu.com/S/${market}${symbol}`;
+}
+
 export default function StockDetail() {
   const { symbol = "" } = useParams(); const navigate = useNavigate(); const toast = useToast();
   const [data, setData] = useState<Detail | null>(null); const [error, setError] = useState("");
@@ -24,7 +33,7 @@ export default function StockDetail() {
   if (!data) return <div className="skeleton">正在加载股票研究档案…</div>;
   const latest = data.candidates[0];
   const addWatch = async () => { try { await api("/watchlist", { method: "POST", body: JSON.stringify({ symbol, group_name: "默认分组", note: "", target_price: null, watch_price: null }) }); toast.show("已加入自选股"); load(); } catch (e) { toast.show((e as Error).message, "error"); } };
-  return <><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={15} />返回</button><PageHeader title={`${data.profile?.name || symbol} ${symbol}`} subtitle={`${data.profile?.industry || "行业待补充"} · 行情日 ${data.snapshot?.date || "—"} · 真实价格口径`} actions={<><button className="secondary icon-button" onClick={addWatch} disabled={Boolean(data.watchlist)}><Star size={15} />{data.watchlist ? "已在自选" : "加入自选"}</button>{latest && <button className="secondary icon-button" onClick={() => navigate(`/plans?q=${symbol}`)}><ClipboardList size={15} />查看计划</button>}<button className="primary icon-button" onClick={() => navigate(`/portfolio?symbol=${symbol}&price=${data.snapshot?.close || ""}`)}><BriefcaseBusiness size={15} />录入成交</button></>} />
+  return <><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={15} />返回</button><PageHeader title={<><a className="icon-button stock-external-link" href={xueqiuUrl(symbol)} target="_blank" rel="noopener noreferrer" title={`在雪球查看${data.profile?.name || symbol}`} aria-label={`在雪球查看${data.profile?.name || symbol}`}>{data.profile?.name || symbol}<ExternalLink size={18} /></a> <span className="stock-title-code">{symbol}</span></>} subtitle={`${data.profile?.industry || "行业待补充"} · 行情日 ${data.snapshot?.date || "—"} · 真实价格口径`} actions={<><button className="secondary icon-button" onClick={addWatch} disabled={Boolean(data.watchlist)}><Star size={15} />{data.watchlist ? "已在自选" : "加入自选"}</button>{latest && <button className="secondary icon-button" onClick={() => navigate(`/plans?q=${symbol}`)}><ClipboardList size={15} />查看计划</button>}<button className="primary icon-button" onClick={() => navigate(`/portfolio?symbol=${symbol}&price=${data.snapshot?.close || ""}`)}><BriefcaseBusiness size={15} />录入成交</button></>} />
     <section className="quote-strip"><div><span>最新价</span><b>{money(data.snapshot?.close)}</b></div><div><span>PE TTM</span><b>{money(data.snapshot?.pe_ttm)}</b></div><div><span>PB MRQ</span><b>{money(data.snapshot?.pb_mrq)}</b></div><div><span>交易状态</span><b>{data.snapshot?.trade_status === 0 ? "停牌" : data.profile?.is_st ? "ST" : "正常"}</b></div>{latest && <><div><span>四维总分</span><b>{latest.total_score}/8</b></div><div><span>当前位置</span><ZoneBadge zone={latest.current_zone || latest.zone} /></div></>}</section>
     <section className="panel"><div className="panel-title"><div><h2>价格与交易计划</h2><small>最近 120 个交易日 · MA10/20/60 · 成交量</small></div></div><StockChart bars={data.bars} entryLow={latest?.current_entry_low || latest?.entry_low || 0} entryHigh={latest?.current_entry_high || latest?.entry_high || 0} stop={latest?.current_stop_price || latest?.stop_price || 0} /></section>
     {latest && <section className="dashboard-grid"><article className="panel"><div className="panel-title"><div><h2>四维评分拆解</h2></div><span className={`score score-${latest.total_score}`}>{latest.total_score}</span></div><div className="score-breakdown"><div><span>60 日回撤</span><b>{latest.score_drawdown || 0}/3</b><small>{pct(latest.drawdown_60)}</small></div><div><span>低点反弹</span><b>{latest.score_rebound || 0}/2</b><small>{pct(latest.rebound_60)}</small></div><div><span>MA10 位置</span><b>{latest.score_ma || 0}/2</b><small>趋势位置</small></div><div><span>量价配合</span><b>{latest.score_volume || 0}/1</b><small>量比 {latest.volume_ratio?.toFixed(2)}</small></div></div><div className="logic-box"><b>K 线逻辑</b><p>{latest.rationale}</p></div></article><article className="panel"><div className="panel-title"><div><h2>信号后表现</h2></div></div><div className="performance-grid">{[["1日", latest.return_1d], ["3日", latest.return_3d], ["5日", latest.return_5d], ["10日", latest.return_10d], ["20日", latest.return_20d], ["MFE", latest.mfe], ["MAE", latest.mae]].map(([label, value]) => <div key={String(label)}><span>{label}</span><b className={typeof value === "number" ? value >= 0 ? "positive" : "negative" : ""}>{typeof value === "number" ? pct(value) : "—"}</b></div>)}</div><div className="event-tags"><span className={latest.hit_entry ? "hit" : ""}>买入区 {latest.hit_entry ? "已触及" : "未触及"}</span><span className={latest.hit_stop ? "danger" : ""}>止损 {latest.hit_stop ? "已触发" : "未触发"}</span></div></article></section>}
