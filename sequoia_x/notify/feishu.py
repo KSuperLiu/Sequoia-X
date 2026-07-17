@@ -144,12 +144,18 @@ class FeishuNotifier:
         base_url = self.settings.public_base_url.rstrip("/")
         trade_date = summary.get("trade_date", "")
         zones = summary.get("zone_counts", {})
+        alerts = summary.get("watchlist_alerts", [])
+        alert_text = ""
+        if alerts:
+            names = "、".join(str(item.get("name") or item.get("symbol")) for item in alerts[:8])
+            alert_text = f"\n**自选提醒：** {names}" + (f" 等 {len(alerts)} 只" if len(alerts) > 8 else "")
         content = (
             f"**日期：** {trade_date}\n"
             f"**候选：** {summary.get('candidate_count', 0)} 只\n"
             f"**位置：** 左侧 {zones.get('LEFT', 0)} / 中部 {zones.get('MIDDLE', 0)} / "
             f"右侧 {zones.get('RIGHT', 0)} / 否决 {zones.get('VETO', 0)}\n"
-            f"**今日操作：** {summary.get('action', '无')}\n"
+            f"**今日操作：** {summary.get('action', '无')}"
+            f"{alert_text}\n"
             f"[打开 Sequoia-X 日报]({base_url}/reports)"
         )
         payload = {

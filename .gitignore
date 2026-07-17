@@ -41,3 +41,5 @@ logs/
 
 # Hypothesis 测试缓存
 .hypothesis/
+web/test-results/
+web/playwright-report/
