@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Download, Edit3, FilterX, Plus, Search, Star, Trash2 } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, money, pct } from "../api";
@@ -24,10 +24,11 @@ function CandidateTable() {
   const [selected, setSelected] = useState<number[]>([]);
   const [filters, setFilters] = useState({ q: "", zone: searchParams.get("zone") || "", min_score: "0", lifecycle: "", plan_status: "", confidence: "", sort: "score_desc", account_id: "", page: "1" });
   const [loading, setLoading] = useState(true);
-  const query = useMemo(() => new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== "")).toString(), [filters]);
+  const deferredQuery = useDeferredValue(filters.q);
+  const query = useMemo(() => new URLSearchParams(Object.entries({ ...filters, q: deferredQuery }).filter(([, value]) => value !== "")).toString(), [filters, deferredQuery]);
   const load = () => { setLoading(true); api<Paged<Candidate>>(`/candidates/search?${query}`).then(setData).catch((e) => toast.show(e.message, "error")).finally(() => setLoading(false)); };
   useEffect(() => { void api<Account[]>("/accounts").then(setAccounts); }, []);
-  useEffect(() => { const timer = window.setTimeout(load, 180); return () => window.clearTimeout(timer); }, [query]);
+  useEffect(() => { void load(); }, [query]);
   const update = (key: string, value: string) => setFilters((old) => ({ ...old, [key]: value, page: key === "page" ? value : "1" }));
   const bulk = async (status: string) => { let failed = 0; for (const id of selected) { try { await api(`/candidates/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }); } catch { failed += 1; } } toast.show(failed ? `${selected.length - failed} 条已更新，${failed} 条因状态限制跳过` : `${selected.length} 条候选已更新`, failed ? "error" : "success"); setSelected([]); load(); };
   const reset = () => setFilters({ q: "", zone: "", min_score: "0", lifecycle: "", plan_status: "", confidence: "", sort: "score_desc", account_id: "", page: "1" });
