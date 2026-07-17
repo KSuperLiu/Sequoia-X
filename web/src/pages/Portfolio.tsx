@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { BriefcaseBusiness, Download, Plus, ReceiptText, Shield, WalletCards } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, money, pct } from "../api";
+import { accountMoney as money, api, pct } from "../api";
 import LineChart from "../components/LineChart";
 import { Empty, Kpi, Modal, PageHeader } from "../components/Ui";
 import { useToast } from "../components/Toast";

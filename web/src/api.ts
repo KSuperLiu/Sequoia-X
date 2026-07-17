@@ -29,5 +29,13 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 export const money = (value?: number | null) =>
   value == null ? "—" : new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
 
+export const accountMoney = (value?: number | null) => {
+  if (value == null) return "—";
+  if (Math.abs(value) >= 10_000) {
+    return `${new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value / 10_000)} 万`;
+  }
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
+};
+
 export const pct = (value?: number | null) =>
   value == null ? "—" : `${(value * 100).toFixed(1)}%`;
