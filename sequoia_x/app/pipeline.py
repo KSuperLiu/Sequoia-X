@@ -11,6 +11,7 @@ from typing import Any
 from sequoia_x.app.db import AppDatabase, utc_now
 from sequoia_x.app.domain import PlanStatus, PositionZone, RunStatus
 from sequoia_x.app.market import MarketEnricher
+from sequoia_x.app.ledger import LedgerService
 from sequoia_x.app.scoring import score_candidate
 from sequoia_x.core.logger import get_logger
 from sequoia_x.data.engine import DataEngine
@@ -48,7 +49,8 @@ class DailyTrackingService:
         tracked_rows = self.app_db.query_all(
             "SELECT DISTINCT symbol FROM trade_fill "
             "UNION SELECT DISTINCT symbol FROM candidate "
-            "WHERE lifecycle_status IN ('WATCHING','PLANNED','BOUGHT')"
+            "WHERE lifecycle_status IN ('WATCHING','PLANNED','BOUGHT') "
+            "UNION SELECT symbol FROM watchlist_item"
         )
         tracked_symbols = {str(row["symbol"]) for row in tracked_rows}
         quote_symbols = sorted(set(symbols) | tracked_symbols)
@@ -68,15 +70,16 @@ class DailyTrackingService:
 
         missing_quotes = sum(symbol not in quotes for symbol in quote_symbols)
         with self.app_db.transaction() as conn:
-            conn.execute("DELETE FROM strategy_signal WHERE run_id=?", (run_id,))
-            conn.execute("DELETE FROM candidate WHERE run_id=?", (run_id,))
             for strategy_name, raw_symbols in raw_results.items():
                 filtered_set = set(filtered.get(strategy_name, []))
                 raw_set = set(raw_symbols)
                 for symbol in sorted(raw_set | filtered_set):
                     conn.execute(
                         "INSERT INTO strategy_signal(run_id,trade_date,symbol,strategy_name,raw_selected,"
-                        "filtered_selected,dropped_reason,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                        "filtered_selected,dropped_reason,created_at) VALUES (?,?,?,?,?,?,?,?) "
+                        "ON CONFLICT(run_id,symbol,strategy_name) DO UPDATE SET "
+                        "raw_selected=excluded.raw_selected,filtered_selected=excluded.filtered_selected,"
+                        "dropped_reason=excluded.dropped_reason",
                         (
                             run_id,
                             trade_date,
@@ -105,25 +108,40 @@ class DailyTrackingService:
                     if score.total_score >= 7 and len(symbol_strategies[symbol]) >= 2
                     else "MEDIUM" if score.total_score >= 5 else "LOW"
                 )
-                cursor = conn.execute(
-                    "INSERT INTO candidate(run_id,trade_date,symbol,name,industry,strategies_json,"
-                    "consensus_count,confidence,drawdown_60,rebound_60,ma10,ma20,volume_ratio,atr14,"
-                    "score_drawdown,score_rebound,score_ma,score_volume,total_score,real_close,pe_ttm,"
-                    "pb_mrq,entry_low,entry_high,stop_price,zone,veto_reason,rationale,created_at,updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        run_id, trade_date, symbol, profile.get("name"), profile.get("industry"),
-                        json.dumps(symbol_strategies[symbol], ensure_ascii=False),
-                        len(symbol_strategies[symbol]), confidence, score.drawdown_60,
-                        score.rebound_60, score.ma10, score.ma20, score.volume_ratio, score.atr14,
-                        score.score_drawdown, score.score_rebound, score.score_ma, score.score_volume,
-                        score.total_score, quote.get("close") if quote else None,
-                        quote.get("pe_ttm") if quote else None, quote.get("pb_mrq") if quote else None,
-                        score.entry_low, score.entry_high, score.stop_price, score.zone.value,
-                        score.veto_reason, score.rationale, now, now,
-                    ),
+                values = (
+                    profile.get("name"), profile.get("industry"),
+                    json.dumps(symbol_strategies[symbol], ensure_ascii=False),
+                    len(symbol_strategies[symbol]), confidence, score.drawdown_60,
+                    score.rebound_60, score.ma10, score.ma20, score.volume_ratio, score.atr14,
+                    score.score_drawdown, score.score_rebound, score.score_ma, score.score_volume,
+                    score.total_score, quote.get("close") if quote else None,
+                    quote.get("pe_ttm") if quote else None, quote.get("pb_mrq") if quote else None,
+                    score.entry_low, score.entry_high, score.stop_price, score.zone.value,
+                    score.veto_reason, score.rationale,
                 )
-                candidate_id = int(cursor.lastrowid)
+                existing = conn.execute(
+                    "SELECT id FROM candidate WHERE run_id=? AND symbol=?", (run_id, symbol)
+                ).fetchone()
+                if existing:
+                    candidate_id = int(existing["id"])
+                    conn.execute(
+                        "UPDATE candidate SET name=?,industry=?,strategies_json=?,consensus_count=?,"
+                        "confidence=?,drawdown_60=?,rebound_60=?,ma10=?,ma20=?,volume_ratio=?,atr14=?,"
+                        "score_drawdown=?,score_rebound=?,score_ma=?,score_volume=?,total_score=?,"
+                        "real_close=?,pe_ttm=?,pb_mrq=?,entry_low=?,entry_high=?,stop_price=?,zone=?,"
+                        "veto_reason=?,rationale=?,updated_at=? WHERE id=?",
+                        (*values, now, candidate_id),
+                    )
+                else:
+                    cursor = conn.execute(
+                        "INSERT INTO candidate(run_id,trade_date,symbol,name,industry,strategies_json,"
+                        "consensus_count,confidence,drawdown_60,rebound_60,ma10,ma20,volume_ratio,atr14,"
+                        "score_drawdown,score_rebound,score_ma,score_volume,total_score,real_close,pe_ttm,"
+                        "pb_mrq,entry_low,entry_high,stop_price,zone,veto_reason,rationale,created_at,updated_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (run_id, trade_date, symbol, *values, now, now),
+                    )
+                    candidate_id = int(cursor.lastrowid)
                 plan_status = (
                     PlanStatus.READY.value
                     if score.zone in {PositionZone.LEFT, PositionZone.MIDDLE}
@@ -133,7 +151,7 @@ class DailyTrackingService:
                     "INSERT INTO trade_plan(candidate_id,original_entry_low,original_entry_high,"
                     "original_stop_price,original_zone,current_entry_low,current_entry_high,"
                     "current_stop_price,current_zone,status,created_at,updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(candidate_id) DO NOTHING",
                     (
                         candidate_id, score.entry_low, score.entry_high, score.stop_price,
                         score.zone.value, score.entry_low, score.entry_high, score.stop_price,
@@ -149,6 +167,15 @@ class DailyTrackingService:
             (run_id,),
         )
         summary, report_html = self._build_report(trade_date, candidates)
+        watch_alerts = self.app_db.query_all(
+            "SELECT w.symbol,COALESCE(p.name,w.symbol) name,w.target_price,w.watch_price,s.close "
+            "FROM watchlist_item w LEFT JOIN stock_profile p ON p.symbol=w.symbol "
+            "JOIN market_snapshot s ON s.symbol=w.symbol AND s.date=? "
+            "WHERE (w.target_price IS NOT NULL AND s.close>=w.target_price) "
+            "OR (w.watch_price IS NOT NULL AND s.close<=w.watch_price)",
+            (trade_date,),
+        )
+        summary["watchlist_alerts"] = watch_alerts
         with self.app_db.transaction() as conn:
             conn.execute("DELETE FROM daily_report WHERE run_id=?", (run_id,))
             conn.execute(
@@ -182,6 +209,9 @@ class DailyTrackingService:
                     run_id,
                 ),
             )
+        ledger = LedgerService(self.app_db)
+        for account in self.app_db.query_all("SELECT id FROM account"):
+            ledger.capture_snapshot(int(account["id"]), trade_date)
         return {"run_id": run_id, "trade_date": trade_date, "status": status, **summary}
 
     def _expected_trade_date(self, now: datetime | None = None) -> str | None:

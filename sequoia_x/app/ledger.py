@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from sequoia_x.app.db import AppDatabase, utc_now
@@ -59,6 +60,7 @@ class LedgerService:
                 (account_id, initial_cash, now),
             )
         self.db.audit("admin", "CREATE_ACCOUNT", "account", account_id)
+        self.capture_snapshot(account_id)
         return account_id
 
     def add_cash_event(
@@ -76,7 +78,9 @@ class LedgerService:
                 "VALUES (?,?,?,?,?,?)",
                 (account_id, event_type, signed, trade_date, note, utc_now()),
             )
-        return int(cursor.lastrowid)
+        event_id = int(cursor.lastrowid)
+        self.capture_snapshot(account_id, trade_date)
+        return event_id
 
     def add_fill(
         self,
@@ -143,24 +147,30 @@ class LedgerService:
                     (utc_now(), plan_id),
                 )
         self.db.audit("admin", "ADD_FILL", "trade_fill", fill_id, {"warnings": warnings})
+        self.capture_snapshot(account_id, trade_date)
         return {"id": fill_id, "fees": round(total_fee, 2), "warnings": warnings}
 
     def cash_balance(self, account_id: int) -> float:
         events = self.db.query_one(
-            "SELECT COALESCE(SUM(amount),0) total FROM cash_event WHERE account_id=?",
+            "SELECT COALESCE(SUM(e.amount),0) total FROM cash_event e "
+            "WHERE e.account_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM cash_event_reversal r WHERE r.cash_event_id=e.id)",
             (account_id,),
         )
         fills = self.db.query_one(
             "SELECT COALESCE(SUM(CASE WHEN side='SELL' THEN quantity*price-commission-stamp_duty-transfer_fee "
             "ELSE -(quantity*price+commission+stamp_duty+transfer_fee) END),0) total "
-            "FROM trade_fill WHERE account_id=?",
+            "FROM trade_fill f WHERE account_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM trade_fill_reversal r WHERE r.fill_id=f.id)",
             (account_id,),
         )
         return float(events["total"] if events else 0) + float(fills["total"] if fills else 0)
 
     def positions(self, account_id: int) -> dict[str, Position]:
         fills = self.db.query_all(
-            "SELECT * FROM trade_fill WHERE account_id=? ORDER BY trade_date,id", (account_id,)
+            "SELECT f.* FROM trade_fill f WHERE f.account_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM trade_fill_reversal r WHERE r.fill_id=f.id) "
+            "ORDER BY f.trade_date,f.id", (account_id,)
         )
         positions: dict[str, Position] = {}
         for fill in fills:
@@ -197,6 +207,19 @@ class LedgerService:
                 (position.symbol,),
             )
             last_price = float(quote["close"]) if quote and quote["close"] else position.average_cost
+            risk = self.db.query_one(
+                "SELECT stop_price,note FROM position_risk WHERE account_id=? AND symbol=?",
+                (account_id, position.symbol),
+            )
+            if risk is None:
+                risk = self.db.query_one(
+                    "SELECT p.current_stop_price stop_price,p.note FROM trade_fill f "
+                    "JOIN trade_plan p ON p.id=f.plan_id "
+                    "WHERE f.account_id=? AND f.symbol=? AND f.plan_id IS NOT NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM trade_fill_reversal r WHERE r.fill_id=f.id) "
+                    "ORDER BY f.trade_date DESC,f.id DESC LIMIT 1",
+                    (account_id, position.symbol),
+                )
             value = position.quantity * last_price
             pnl = value - position.quantity * position.average_cost
             market_value += value
@@ -211,6 +234,15 @@ class LedgerService:
                     "unrealized_pnl": round(pnl, 2),
                     "return_pct": pnl / (position.quantity * position.average_cost) if position.average_cost else 0,
                     "quote_date": quote["date"] if quote else None,
+                    "stop_price": float(risk["stop_price"]) if risk and risk["stop_price"] else None,
+                    "stop_distance": (
+                        (last_price - float(risk["stop_price"])) / last_price
+                        if risk and risk["stop_price"] and last_price else None
+                    ),
+                    "risk_amount": (
+                        max(0.0, last_price - float(risk["stop_price"])) * position.quantity
+                        if risk and risk["stop_price"] else None
+                    ),
                 }
             )
         cash = self.cash_balance(account_id)
@@ -226,10 +258,142 @@ class LedgerService:
             "positions": rows,
         }
 
+    def list_fills(self, account_id: int) -> list[dict[str, Any]]:
+        return self.db.query_all(
+            "SELECT f.*,r.id reversal_id,r.reason reversal_reason,r.created_at reversed_at "
+            "FROM trade_fill f LEFT JOIN trade_fill_reversal r ON r.fill_id=f.id "
+            "WHERE f.account_id=? ORDER BY f.trade_date DESC,f.id DESC",
+            (account_id,),
+        )
+
+    def list_cash_events(self, account_id: int) -> list[dict[str, Any]]:
+        return self.db.query_all(
+            "SELECT e.*,r.id reversal_id,r.reason reversal_reason,r.created_at reversed_at "
+            "FROM cash_event e LEFT JOIN cash_event_reversal r ON r.cash_event_id=e.id "
+            "WHERE e.account_id=? ORDER BY e.trade_date DESC,e.id DESC",
+            (account_id,),
+        )
+
+    def reverse_fill(self, account_id: int, fill_id: int, reason: str, actor: str) -> int:
+        fill = self.db.query_one(
+            "SELECT * FROM trade_fill WHERE id=? AND account_id=?", (fill_id, account_id)
+        )
+        if fill is None:
+            raise LedgerError("成交不存在")
+        if len(reason.strip()) < 2:
+            raise LedgerError("请填写冲正原因")
+        try:
+            with self.db.transaction() as conn:
+                cursor = conn.execute(
+                    "INSERT INTO trade_fill_reversal(fill_id,reason,actor,created_at) VALUES (?,?,?,?)",
+                    (fill_id, reason.strip(), actor, utc_now()),
+                )
+                if fill["plan_id"]:
+                    remaining = conn.execute(
+                        "SELECT COUNT(*) count FROM trade_fill f WHERE f.plan_id=? AND f.id<>? "
+                        "AND NOT EXISTS (SELECT 1 FROM trade_fill_reversal r WHERE r.fill_id=f.id)",
+                        (fill["plan_id"], fill_id),
+                    ).fetchone()
+                    if remaining and int(remaining["count"]) == 0:
+                        conn.execute(
+                            "UPDATE trade_plan SET status='READY',updated_at=? WHERE id=?",
+                            (utc_now(), fill["plan_id"]),
+                        )
+                        conn.execute(
+                            "UPDATE candidate SET lifecycle_status='PLANNED',updated_at=? "
+                            "WHERE id=(SELECT candidate_id FROM trade_plan WHERE id=?)",
+                            (utc_now(), fill["plan_id"]),
+                        )
+                reversal_id = int(cursor.lastrowid)
+        except Exception as exc:
+            if "UNIQUE" in str(exc).upper():
+                raise LedgerError("该成交已经冲正") from exc
+            raise
+        account = self.db.query_one("SELECT account_type FROM account WHERE id=?", (account_id,))
+        if account and account["account_type"] == AccountType.PAPER.value:
+            if self.cash_balance(account_id) < -0.01:
+                with self.db.transaction() as conn:
+                    conn.execute("DELETE FROM trade_fill_reversal WHERE id=?", (reversal_id,))
+                raise LedgerError("冲正后模拟账户现金为负，不能执行")
+            if any(position.quantity < 0 for position in self.positions(account_id).values()):
+                with self.db.transaction() as conn:
+                    conn.execute("DELETE FROM trade_fill_reversal WHERE id=?", (reversal_id,))
+                raise LedgerError("冲正后模拟账户出现超卖，不能执行")
+        self.db.audit(actor, "REVERSE_FILL", "trade_fill", fill_id, {"reason": reason})
+        self.capture_snapshot(account_id)
+        return reversal_id
+
+    def reverse_cash_event(self, account_id: int, event_id: int, reason: str, actor: str) -> int:
+        event = self.db.query_one(
+            "SELECT * FROM cash_event WHERE id=? AND account_id=?", (event_id, account_id)
+        )
+        if event is None:
+            raise LedgerError("资金流水不存在")
+        if len(reason.strip()) < 2:
+            raise LedgerError("请填写冲正原因")
+        try:
+            with self.db.transaction() as conn:
+                cursor = conn.execute(
+                    "INSERT INTO cash_event_reversal(cash_event_id,reason,actor,created_at) VALUES (?,?,?,?)",
+                    (event_id, reason.strip(), actor, utc_now()),
+                )
+                reversal_id = int(cursor.lastrowid)
+        except Exception as exc:
+            if "UNIQUE" in str(exc).upper():
+                raise LedgerError("该资金流水已经冲正") from exc
+            raise
+        account = self.db.query_one("SELECT account_type FROM account WHERE id=?", (account_id,))
+        if account and account["account_type"] == AccountType.PAPER.value and self.cash_balance(account_id) < -0.01:
+            with self.db.transaction() as conn:
+                conn.execute("DELETE FROM cash_event_reversal WHERE id=?", (reversal_id,))
+            raise LedgerError("冲正后模拟账户现金为负，不能执行")
+        self.db.audit(actor, "REVERSE_CASH_EVENT", "cash_event", event_id, {"reason": reason})
+        self.capture_snapshot(account_id)
+        return reversal_id
+
+    def set_position_risk(
+        self, account_id: int, symbol: str, stop_price: float | None, note: str, actor: str
+    ) -> None:
+        if stop_price is not None and stop_price <= 0:
+            raise LedgerError("止损价必须大于 0")
+        with self.db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO position_risk(account_id,symbol,stop_price,note,updated_by,updated_at) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(account_id,symbol) DO UPDATE SET "
+                "stop_price=excluded.stop_price,note=excluded.note,updated_by=excluded.updated_by,"
+                "updated_at=excluded.updated_at",
+                (account_id, symbol, stop_price, note, actor, utc_now()),
+            )
+        self.db.audit(actor, "UPDATE_POSITION_RISK", "position", f"{account_id}:{symbol}")
+
+    def capture_snapshot(self, account_id: int, snapshot_date: str | None = None) -> None:
+        portfolio = self.portfolio(account_id)
+        snapshot_date = snapshot_date or date.today().isoformat()
+        peak = self.db.query_one(
+            "SELECT MAX(equity) peak FROM account_snapshot WHERE account_id=?", (account_id,)
+        )
+        peak_equity = max(float(peak["peak"] or 0) if peak else 0, float(portfolio["equity"]))
+        drawdown = float(portfolio["equity"]) / peak_equity - 1 if peak_equity > 0 else 0.0
+        with self.db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO account_snapshot(account_id,date,cash,market_value,equity,unrealized_pnl,"
+                "realized_pnl,drawdown,position_count,created_at) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(account_id,date) DO UPDATE SET cash=excluded.cash,"
+                "market_value=excluded.market_value,equity=excluded.equity,"
+                "unrealized_pnl=excluded.unrealized_pnl,realized_pnl=excluded.realized_pnl,"
+                "drawdown=excluded.drawdown,position_count=excluded.position_count,created_at=excluded.created_at",
+                (
+                    account_id, snapshot_date, portfolio["cash"], portfolio["market_value"],
+                    portfolio["equity"], portfolio["unrealized_pnl"], portfolio["realized_pnl"],
+                    drawdown, len(portfolio["positions"]), utc_now(),
+                ),
+            )
+
     def _bought_on(self, account_id: int, symbol: str, trade_date: str) -> int:
         row = self.db.query_one(
             "SELECT COALESCE(SUM(quantity),0) quantity FROM trade_fill "
-            "WHERE account_id=? AND symbol=? AND side='BUY' AND trade_date=?",
+            "WHERE account_id=? AND symbol=? AND side='BUY' AND trade_date=? "
+            "AND NOT EXISTS (SELECT 1 FROM trade_fill_reversal r WHERE r.fill_id=trade_fill.id)",
             (account_id, symbol, trade_date),
         )
         return int(row["quantity"] if row else 0)

@@ -64,3 +64,31 @@ def test_paper_account_enforces_lot_t1_and_cash(tmp_path: Path) -> None:
             account_id=account_id, symbol="600002", side="BUY", quantity=10_000,
             price=20, trade_date="2026-01-06",
         )
+
+
+def test_reversal_keeps_original_and_rebuilds_portfolio(tmp_path: Path) -> None:
+    service, account_id = _service(tmp_path)
+    fill = service.add_fill(
+        account_id=account_id, symbol="600001", side="BUY", quantity=100,
+        price=10, trade_date="2026-01-05",
+    )
+    assert service.positions(account_id)["600001"].quantity == 100
+    service.reverse_fill(account_id, fill["id"], "录入价格错误", "admin")
+    assert service.positions(account_id).get("600001") is None
+    assert service.cash_balance(account_id) == 100_000
+    rows = service.list_fills(account_id)
+    assert rows[0]["id"] == fill["id"]
+    assert rows[0]["reversal_reason"] == "录入价格错误"
+
+
+def test_cash_reversal_and_account_snapshot(tmp_path: Path) -> None:
+    service, account_id = _service(tmp_path)
+    event_id = service.add_cash_event(account_id, "DEPOSIT", 5_000, "2026-01-05", "追加资金")
+    assert service.cash_balance(account_id) == 105_000
+    service.reverse_cash_event(account_id, event_id, "重复录入", "admin")
+    assert service.cash_balance(account_id) == 100_000
+    snapshots = service.db.query_all(
+        "SELECT * FROM account_snapshot WHERE account_id=? ORDER BY date", (account_id,)
+    )
+    assert snapshots
+    assert snapshots[-1]["equity"] == 100_000

@@ -1,6 +1,7 @@
 """FastAPI 登录、CSRF 与账户接口测试。"""
 
 from pathlib import Path
+import sqlite3
 
 from fastapi.testclient import TestClient
 
@@ -55,3 +56,56 @@ def test_auth_csrf_and_account_flow(tmp_path: Path) -> None:
         "/api/v1/runs/trigger", headers={"X-CSRF-Token": csrf}
     )
     assert duplicate.status_code == 409
+
+
+def test_watchlist_jobs_and_system_endpoints(tmp_path: Path) -> None:
+    market_db = tmp_path / "market.db"
+    with sqlite3.connect(market_db) as conn:
+        conn.execute(
+            "CREATE TABLE stock_market_cap(symbol TEXT PRIMARY KEY,name TEXT,market_cap REAL,updated_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO stock_market_cap VALUES ('600519','贵州茅台',2000000000000,'2026-07-17')"
+        )
+    settings = Settings(
+        db_path=str(market_db),
+        app_db_path=str(tmp_path / "app.db"),
+        feishu_webhook_url="https://example.com/hook",
+        admin_username="admin",
+        admin_password="test-password-123",
+        cookie_secure=False,
+    )
+    client = TestClient(create_app(settings))
+    login = client.post(
+        "/api/v1/auth/login", json={"username": "admin", "password": "test-password-123"}
+    )
+    csrf = login.json()["csrf_token"]
+    headers = {"X-CSRF-Token": csrf}
+
+    search = client.get("/api/v1/stocks/search?q=茅台")
+    assert search.status_code == 200
+    assert search.json()[0]["symbol"] == "600519"
+    created = client.post(
+        "/api/v1/watchlist",
+        headers=headers,
+        json={
+            "symbol": "600519", "group_name": "核心", "note": "等待回调",
+            "target_price": 1600, "watch_price": 1400,
+        },
+    )
+    assert created.status_code == 200
+    assert client.get("/api/v1/watchlist").json()[0]["group_name"] == "核心"
+
+    rejected = client.post(
+        "/api/v1/jobs", headers=headers,
+        json={"job_type": "BACKFILL", "confirmation": ""},
+    )
+    assert rejected.status_code == 422
+    queued = client.post(
+        "/api/v1/jobs", headers=headers,
+        json={"job_type": "BACKFILL", "confirmation": "BACKFILL"},
+    )
+    assert queued.status_code == 202
+    assert queued.json()["status"] == "PENDING"
+    assert client.get("/api/v1/system/health").status_code == 200
+    assert client.get("/api/v1/audit-logs").status_code == 200

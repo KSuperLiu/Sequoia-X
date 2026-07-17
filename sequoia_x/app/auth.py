@@ -97,6 +97,26 @@ class AuthService:
                 conn.execute("DELETE FROM auth_session WHERE token_hash=?", (_token_hash(raw_token),))
         response.delete_cookie(SESSION_COOKIE, path="/")
 
+    def change_password(self, user_id: int, current_password: str, new_password: str) -> None:
+        if len(new_password) < 10:
+            raise HTTPException(status_code=422, detail="新密码至少需要 10 个字符")
+        user = self.db.query_one("SELECT * FROM admin_user WHERE id=?", (user_id,))
+        if user is None:
+            raise HTTPException(status_code=404, detail="管理员不存在")
+        try:
+            valid = _hasher.verify(str(user["password_hash"]), current_password)
+        except VerifyMismatchError:
+            valid = False
+        if not valid:
+            raise HTTPException(status_code=422, detail="当前密码不正确")
+        with self.db.transaction() as conn:
+            conn.execute(
+                "UPDATE admin_user SET password_hash=?,updated_at=? WHERE id=?",
+                (_hasher.hash(new_password), utc_now(), user_id),
+            )
+            conn.execute("DELETE FROM auth_session WHERE user_id=?", (user_id,))
+        self.db.audit(str(user["username"]), "CHANGE_PASSWORD", "admin_user", user_id)
+
     def session(self, request: Request) -> dict[str, Any]:
         raw_token = request.cookies.get(SESSION_COOKIE)
         if not raw_token:

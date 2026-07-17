@@ -13,6 +13,12 @@ from typing import Any
 from sequoia_x.app.domain import RuleConfig
 
 SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS schema_migration (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_setting (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -289,6 +295,84 @@ CREATE TABLE IF NOT EXISTS backtest_equity (
     benchmark REAL,
     PRIMARY KEY(backtest_run_id, date)
 );
+
+CREATE TABLE IF NOT EXISTS watchlist_item (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL UNIQUE,
+    group_name TEXT NOT NULL DEFAULT '默认分组',
+    note TEXT NOT NULL DEFAULT '',
+    target_price REAL,
+    watch_price REAL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS account_snapshot (
+    account_id INTEGER NOT NULL REFERENCES account(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    cash REAL NOT NULL,
+    market_value REAL NOT NULL,
+    equity REAL NOT NULL,
+    unrealized_pnl REAL NOT NULL,
+    realized_pnl REAL NOT NULL,
+    drawdown REAL NOT NULL,
+    position_count INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(account_id, date)
+);
+
+CREATE TABLE IF NOT EXISTS position_risk (
+    account_id INTEGER NOT NULL REFERENCES account(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
+    stop_price REAL,
+    note TEXT NOT NULL DEFAULT '',
+    updated_by TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(account_id, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS trade_fill_reversal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fill_id INTEGER NOT NULL UNIQUE REFERENCES trade_fill(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cash_event_reversal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cash_event_id INTEGER NOT NULL UNIQUE REFERENCES cash_event(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS job_run (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    current_stage TEXT,
+    progress_current INTEGER NOT NULL DEFAULT 0,
+    progress_total INTEGER NOT NULL DEFAULT 0,
+    message TEXT,
+    exit_code INTEGER,
+    retry_of INTEGER REFERENCES job_run(id)
+);
+CREATE INDEX IF NOT EXISTS idx_job_run_status_id ON job_run(status, id);
+
+CREATE TABLE IF NOT EXISTS job_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_run_id INTEGER NOT NULL REFERENCES job_run(id) ON DELETE CASCADE,
+    level TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_log_run_id ON job_log(job_run_id, id);
 """
 
 
@@ -328,6 +412,10 @@ class AppDatabase:
     def initialize(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA_SQL)
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migration(version,name,applied_at) VALUES (1,?,?)",
+                ("professional_workbench", utc_now()),
+            )
             conn.commit()
         self.ensure_default_rule()
         self.set_default("daily_run_time", "18:30")
