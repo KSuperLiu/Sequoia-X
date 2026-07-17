@@ -6,12 +6,24 @@ export function setCsrfToken(token: string) {
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const method = (options.method || "GET").toUpperCase();
-  const headers = new Headers(options.headers || {});
-  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
-    headers.set("X-CSRF-Token", csrfToken);
+  const mutation = !["GET", "HEAD", "OPTIONS"].includes(method);
+  const send = () => {
+    const headers = new Headers(options.headers || {});
+    if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    if (mutation && csrfToken) headers.set("X-CSRF-Token", csrfToken);
+    return fetch(`/api/v1${path}`, { ...options, headers, credentials: "include" });
+  };
+  let response = await send();
+  if (response.status === 403 && mutation) {
+    const session = await fetch("/api/v1/auth/me", { credentials: "include" });
+    if (session.ok) {
+      const user = await session.json() as { csrf_token?: string };
+      if (user.csrf_token) {
+        setCsrfToken(user.csrf_token);
+        response = await send();
+      }
+    }
   }
-  const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: "include" });
   if (!response.ok) {
     let message = `请求失败 (${response.status})`;
     try {
