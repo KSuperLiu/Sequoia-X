@@ -11,3 +11,17 @@
 @media(max-width:760px){.content{margin-left:0;padding:0 0 82px}.topbar{display:none}.page-body{padding:20px 14px}.sidebar nav section>label{display:none}.sidebar nav section{margin:0}.sidebar nav{display:flex}.quick-actions,.health-grid,.risk-cards{grid-template-columns:1fr}.filter-panel{align-items:stretch}.filter-panel>*{max-width:none!important;width:100%}.comparison-grid,.rule-grid{grid-template-columns:1fr}.quote-strip{grid-template-columns:1fr 1fr}.metric-row.large{grid-template-columns:1fr 1fr}}
 
 .login-browse{display:block;text-align:center;text-decoration:none;margin-top:10px}
+
+/* 手机底部导航：可横向滑动，并避开 iOS/Android 系统安全区。 */
+@media(max-width:760px){
+  .sidebar{inset:auto 0 0 0;width:100%;height:auto;min-height:calc(68px + env(safe-area-inset-bottom,0px));padding:6px 6px calc(6px + env(safe-area-inset-bottom,0px));display:block;background:linear-gradient(180deg,#10254a,#172f59);box-shadow:0 -8px 24px #081a3933;overflow:hidden;z-index:200}
+  .sidebar .brand,.sidebar-foot{display:none}
+  .sidebar nav{display:flex;width:100%;margin:0;padding:0;gap:2px;justify-content:flex-start;overflow-x:auto;overflow-y:hidden;overscroll-behavior-inline:contain;scrollbar-width:none;-webkit-overflow-scrolling:touch;touch-action:pan-x}
+  .sidebar nav::-webkit-scrollbar{display:none}
+  .sidebar nav section{display:contents}
+  .sidebar nav section>label{display:none}
+  .sidebar nav a{flex:0 0 68px;min-width:68px;height:56px;padding:5px 4px;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:10px;line-height:1.05;white-space:nowrap}
+  .sidebar nav a svg{width:20px;height:20px;flex:none}
+  .sidebar nav a.active{box-shadow:inset 0 3px #e7a34c}
+  .content{margin-left:0;padding:0 0 calc(82px + env(safe-area-inset-bottom,0px))}
+}
