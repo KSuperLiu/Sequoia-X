@@ -164,7 +164,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Sequoia-X API",
-        version="2.2.1",
+        version="2.2.2",
         lifespan=lifespan,
         docs_url="/docs" if settings.enable_api_docs else None,
         redoc_url=None,
