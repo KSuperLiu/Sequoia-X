@@ -3,6 +3,7 @@ import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "reac
 import { BarChart3, BellRing, BriefcaseBusiness, ClipboardList, FlaskConical, LayoutDashboard, ListChecks, LogOut, Search, Settings, Star, UserRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api, setCsrfToken } from "./api";
+import { AuthContext, type User } from "./auth";
 import Login from "./pages/Login";
 
 const Backtests = lazy(() => import("./pages/Backtests"));
@@ -15,7 +16,6 @@ const SettingsPage = lazy(() => import("./pages/Settings"));
 const StockDetail = lazy(() => import("./pages/StockDetail"));
 const Tasks = lazy(() => import("./pages/Tasks"));
 
-type User = { username: string; csrf_token: string };
 type StockHit = { symbol: string; name?: string; industry?: string; snapshot?: { close?: number; date?: string } };
 
 const groups: Array<{ label: string; items: Array<[string, string, LucideIcon]> }> = [
@@ -38,17 +38,22 @@ function GlobalSearch() {
   return <div className="global-search"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索股票代码或名称" onKeyDown={(e) => { if (e.key === "Enter" && rows[0]) open(rows[0].symbol); }} />{rows.length > 0 && <div className="search-results">{rows.map((row) => <button key={row.symbol} onClick={() => open(row.symbol)}><span><b>{row.name || row.symbol}</b><small>{row.symbol} · {row.industry || "行业待补充"}</small></span><span>{row.snapshot?.close ?? "—"}<small>{row.snapshot?.date || "暂无快照"}</small></span></button>)}</div>}</div>;
 }
 
-function Shell({ user, onLogout }: { user: User; onLogout: () => Promise<void> }) {
+function Shell({ user, onLogout }: { user: User | null; onLogout: () => Promise<void> }) {
   const navigate = useNavigate();
   const location = useLocation();
   const currentLabel = groups.flatMap((group) => group.items).find(([path]) => location.pathname.startsWith(path))?.[1] || (location.pathname.startsWith("/stocks/") ? "股票详情" : "工作台");
+  const isAdmin = user?.role === "ADMIN";
+  const visibleGroups: typeof groups = isAdmin ? groups : user ? groups.filter((group) => group.label !== "系统") : [
+    ...groups.filter((group) => group.label !== "系统"),
+    { label: "账户", items: [["/login", "登录 / 注册", UserRound]] },
+  ];
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">S</span><div><b>Sequoia-X</b><small>专业投研工作台</small></div></div>
-      <nav>{groups.map((group) => <section key={group.label}><label>{group.label}</label>{group.items.map(([to, label, Icon]) => <NavLink key={to} to={to} className={({ isActive }) => isActive ? "active" : ""}><Icon size={17} />{label}</NavLink>)}</section>)}</nav>
-      <div className="sidebar-foot"><div className="avatar">{user.username.slice(0, 1).toUpperCase()}</div><div><b>{user.username}</b><small>单管理员</small></div><button onClick={async () => { await onLogout(); navigate("/login"); }} title="退出登录"><LogOut size={17} /></button></div>
+      <nav>{visibleGroups.map((group) => <section key={group.label}><label>{group.label}</label>{group.items.map(([to, label, Icon]) => <NavLink key={to} to={to} className={({ isActive }) => isActive ? "active" : ""}><Icon size={17} />{label}</NavLink>)}</section>)}</nav>
+      {user ? <div className="sidebar-foot"><div className="avatar">{user.username.slice(0, 1).toUpperCase()}</div><div><b>{user.username}</b><small>{isAdmin ? "管理员" : "个人账号"}</small></div><button onClick={async () => { await onLogout(); navigate("/dashboard"); }} title="退出登录"><LogOut size={17} /></button></div> : <div className="sidebar-foot guest"><div className="avatar"><UserRound size={17} /></div><div><b>游客浏览</b><small>数据只读</small></div><button onClick={() => navigate("/login")} title="登录或注册"><LogOut size={17} /></button></div>}
     </aside>
-    <main className="content"><header className="topbar"><div className="breadcrumb"><span>Sequoia-X</span><b>/</b><strong>{currentLabel}</strong></div><GlobalSearch /><div className="topbar-actions"><button title="查看风险提醒" onClick={() => navigate("/dashboard")}><BellRing size={17} /></button><button title="管理员设置" onClick={() => navigate("/settings")}><UserRound size={17} /><span>{user.username}</span></button></div></header><div className="page-body"><Suspense fallback={<div className="skeleton">正在载入页面…</div>}><Routes>
+    <main className="content"><header className="topbar"><div className="breadcrumb"><span>Sequoia-X</span><b>/</b><strong>{currentLabel}</strong></div><GlobalSearch /><div className="topbar-actions"><button title="查看风险提醒" onClick={() => navigate("/dashboard")}><BellRing size={17} /></button>{user ? <button title={isAdmin ? "管理员设置" : "我的模拟组合"} onClick={() => navigate(isAdmin ? "/settings" : "/portfolio")}><UserRound size={17} /><span>{user.username}</span></button> : <button title="登录或注册" onClick={() => navigate("/login")}><UserRound size={17} /><span>登录 / 注册</span></button>}</div></header><div className="page-body"><Suspense fallback={<div className="skeleton">正在载入页面…</div>}><Routes>
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/candidates" element={<Candidates />} />
       <Route path="/plans" element={<Plans />} />
@@ -58,8 +63,8 @@ function Shell({ user, onLogout }: { user: User; onLogout: () => Promise<void> }
       <Route path="/backtests" element={<Backtests />} />
       <Route path="/backtests/:runId" element={<Backtests />} />
       <Route path="/stocks/:symbol" element={<StockDetail />} />
-      <Route path="/tasks" element={<Tasks />} />
-      <Route path="/settings" element={<SettingsPage />} />
+      <Route path="/tasks" element={isAdmin ? <Tasks /> : <Navigate to="/dashboard" replace />} />
+      <Route path="/settings" element={isAdmin ? <SettingsPage /> : <Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes></Suspense></div></main>
   </div>;
@@ -70,5 +75,5 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   useEffect(() => { api<User>("/auth/me").then((value) => { setCsrfToken(value.csrf_token); setUser(value); }).catch(() => setUser(null)).finally(() => setLoading(false)); }, []);
   if (loading) return <div className="loading-screen"><span className="brand-mark">S</span><p>正在载入投资工作台…</p></div>;
-  return <Routes><Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <Login onLogin={(value) => { setCsrfToken(value.csrf_token); setUser(value); }} />} /><Route path="/*" element={user ? <Shell user={user} onLogout={async () => { await api("/auth/logout", { method: "POST" }); setUser(null); }} /> : <Navigate to="/login" replace />} /></Routes>;
+  return <AuthContext.Provider value={user}><Routes><Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <Login onLogin={(value) => { setCsrfToken(value.csrf_token); setUser(value); }} />} /><Route path="/*" element={<Shell user={user} onLogout={async () => { await api("/auth/logout", { method: "POST" }); setCsrfToken(""); setUser(null); }} />} /></Routes></AuthContext.Provider>;
 }

@@ -37,6 +37,8 @@ class LedgerService:
         minimum_commission: float,
         stamp_duty_rate: float,
         transfer_fee_rate: float,
+        owner_user_id: int | None = None,
+        actor: str = "admin",
     ) -> int:
         if account_type not in {item.value for item in AccountType}:
             raise LedgerError("账户类型无效")
@@ -44,13 +46,22 @@ class LedgerService:
         if initial_cash <= 0 or any(value < 0 for value in values):
             raise LedgerError("初始资金必须大于 0，费率不得为负")
         now = utc_now()
+        duplicate = self.db.query_one(
+            "SELECT id FROM account WHERE owner_user_id=? AND display_name=?",
+            (owner_user_id, name),
+        )
+        if duplicate:
+            raise LedgerError("当前账号下已存在同名组合")
+        internal_name = f"user-{owner_user_id}-{now}-{name}"
         with self.db.transaction() as conn:
             cursor = conn.execute(
-                "INSERT INTO account(name,account_type,initial_cash,commission_rate,minimum_commission,"
-                "stamp_duty_rate,transfer_fee_rate,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO account(name,display_name,owner_user_id,account_type,initial_cash,"
+                "commission_rate,minimum_commission,stamp_duty_rate,transfer_fee_rate,created_at,"
+                "updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    name, account_type, initial_cash, commission_rate, minimum_commission,
-                    stamp_duty_rate, transfer_fee_rate, now, now,
+                    internal_name, name, owner_user_id, account_type, initial_cash,
+                    commission_rate, minimum_commission, stamp_duty_rate, transfer_fee_rate,
+                    now, now,
                 ),
             )
             account_id = int(cursor.lastrowid)
@@ -59,7 +70,7 @@ class LedgerService:
                 "VALUES (?, 'DEPOSIT', ?, date('now'), '初始资金', ?)",
                 (account_id, initial_cash, now),
             )
-        self.db.audit("admin", "CREATE_ACCOUNT", "account", account_id)
+        self.db.audit(actor, "CREATE_ACCOUNT", "account", account_id)
         self.capture_snapshot(account_id)
         return account_id
 

@@ -14,7 +14,14 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Req
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from sequoia_x.app.auth import AuthService, require_csrf, require_user
+from sequoia_x.app.auth import (
+    AuthService,
+    optional_user,
+    require_admin,
+    require_admin_csrf,
+    require_csrf,
+    require_user,
+)
 from sequoia_x.app.backtest import SUPPORTED_STRATEGIES, BacktestService
 from sequoia_x.app.backup import backup_sqlite
 from sequoia_x.app.daily_job import get_daily_job
@@ -35,8 +42,13 @@ from sequoia_x.data.engine import DataEngine
 
 
 class LoginInput(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1, max_length=32)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class RegisterInput(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=8, max_length=200)
 
 
 class AccountInput(BaseModel):
@@ -152,7 +164,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Sequoia-X API",
-        version="2.1.0",
+        version="2.2.0",
         lifespan=lifespan,
         docs_url="/docs" if settings.enable_api_docs else None,
         redoc_url=None,
@@ -164,6 +176,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.auth = auth
     app.state.ledger = LedgerService(app_db)
     app.state.backtest = BacktestService(app_db, engine)
+
+    def account_for_user(account_id: int, user: dict[str, Any]) -> dict[str, Any]:
+        account = app_db.query_one("SELECT * FROM account WHERE id=?", (account_id,))
+        if account is None:
+            raise HTTPException(404, "账户不存在")
+        if user.get("role") != "ADMIN" and account.get("owner_user_id") != user.get("user_id"):
+            raise HTTPException(404, "账户不存在")
+        return account
+
+    def visible_accounts(user: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if user is None:
+            return []
+        if user.get("role") == "ADMIN":
+            return app_db.query_all("SELECT * FROM account ORDER BY id")
+        return app_db.query_all(
+            "SELECT * FROM account WHERE owner_user_id=? ORDER BY id", (user["user_id"],)
+        )
+
+    def public_account(account: dict[str, Any]) -> dict[str, Any]:
+        return {**account, "name": account.get("display_name") or account["name"]}
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -177,6 +209,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def login(payload: LoginInput, request: Request, response: Response) -> dict[str, Any]:
         return auth.login(payload.username, payload.password, request, response)
 
+    @app.post("/api/v1/auth/register", status_code=201)
+    def register(
+        payload: RegisterInput, request: Request, response: Response
+    ) -> dict[str, Any]:
+        auth.register(payload.username, payload.password)
+        return auth.login(payload.username.strip(), payload.password, request, response)
+
     @app.post("/api/v1/auth/logout")
     def logout(
         request: Request,
@@ -188,16 +227,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/auth/me")
     def me(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
-        return {"username": user["username"], "csrf_token": user["csrf_token"]}
+        return {
+            "username": user["username"],
+            "role": user["role"],
+            "csrf_token": user["csrf_token"],
+        }
 
     @app.get("/api/v1/dashboard")
-    def dashboard(_: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    def dashboard(user: dict[str, Any] | None = Depends(optional_user)) -> dict[str, Any]:
         run = app_db.query_one("SELECT * FROM pipeline_run ORDER BY trade_date DESC,id DESC LIMIT 1")
         report = (
             app_db.query_one("SELECT summary_json FROM daily_report WHERE run_id=?", (run["id"],))
             if run else None
         )
-        accounts = app_db.query_all("SELECT * FROM account ORDER BY id")
+        accounts = visible_accounts(user)
         portfolios = [app.state.ledger.portfolio(int(account["id"])) for account in accounts]
         top_candidates = app_db.query_all(
             "SELECT c.id,c.symbol,c.name,c.industry,c.total_score,c.confidence,c.consensus_count,"
@@ -211,7 +254,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         risks: list[dict[str, Any]] = []
         for account, portfolio_data in zip(accounts, portfolios):
             if float(portfolio_data["total_weight"]) > 0.60:
-                risks.append({"level": "HIGH", "message": f"{account['name']} 总仓位超过 60%", "to": "/portfolio"})
+                account_name = account.get("display_name") or account["name"]
+                risks.append({"level": "HIGH", "message": f"{account_name} 总仓位超过 60%", "to": "/portfolio"})
             for position in portfolio_data["positions"]:
                 distance = position.get("stop_distance")
                 if distance is not None and float(distance) <= 0.03:
@@ -222,18 +266,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     })
         if run is None or not bool(run["data_fresh"]):
             risks.insert(0, {"level": "HIGH", "message": "行情数据未通过新鲜度校验，仓位建议已关闭", "to": "/tasks"})
-        recent_activity = app_db.query_all(
-            "SELECT actor,action,entity_type,entity_id,created_at FROM audit_log ORDER BY id DESC LIMIT 10"
+        is_admin = bool(user and user.get("role") == "ADMIN")
+        recent_activity = (
+            app_db.query_all(
+                "SELECT actor,action,entity_type,entity_id,created_at FROM audit_log "
+                "ORDER BY id DESC LIMIT 10"
+            )
+            if is_admin else []
         )
         return {
             "run": run,
             "summary": json.loads(report["summary_json"]) if report else None,
-            "accounts": [{**account, "portfolio": portfolio} for account, portfolio in zip(accounts, portfolios)],
+            "accounts": [
+                {**public_account(account), "portfolio": portfolio}
+                for account, portfolio in zip(accounts, portfolios)
+            ],
             "data_stale": run is None or not bool(run["data_fresh"]),
             "top_candidates": top_candidates,
             "risk_alerts": risks[:10],
             "recent_activity": recent_activity,
-            "latest_job": latest_job(app_db),
+            "latest_job": latest_job(app_db) if is_admin else None,
             "ready_plan_count": int((app_db.query_one("SELECT COUNT(*) count FROM trade_plan WHERE status='READY'") or {"count": 0})["count"]),
         }
 
@@ -245,7 +297,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         strategy: str | None = None,
         lifecycle: str | None = None,
         account_id: int | None = None,
-        _: dict[str, Any] = Depends(require_user),
+        user: dict[str, Any] | None = Depends(optional_user),
     ) -> list[dict[str, Any]]:
         if trade_date is None:
             latest = app_db.query_one("SELECT MAX(trade_date) trade_date FROM candidate")
@@ -276,6 +328,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for row in rows:
             row["strategies"] = json.loads(row.pop("strategies_json"))
         if account_id is not None:
+            if user is None:
+                raise HTTPException(401, "登录后才可按组合计算仓位")
+            account_for_user(account_id, user)
             portfolio_data = app.state.ledger.portfolio(account_id)
             _, active_rule = app_db.active_rule()
             held = {
@@ -321,7 +376,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sort: str = "score_desc",
         page: int = Query(1, ge=1),
         page_size: int = Query(30, ge=1, le=100),
-        _: dict[str, Any] = Depends(require_user),
+        user: dict[str, Any] | None = Depends(optional_user),
     ) -> dict[str, Any]:
         if trade_date is None:
             latest = app_db.query_one("SELECT MAX(trade_date) trade_date FROM candidate")
@@ -370,6 +425,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             f"WHERE {where} ORDER BY {order_by} LIMIT ? OFFSET ?",
             tuple([*params, page_size, (page - 1) * page_size]),
         )
+        if account_id:
+            if user is None:
+                raise HTTPException(401, "登录后才可按组合计算仓位")
+            account_for_user(account_id, user)
         portfolio_data = app.state.ledger.portfolio(account_id) if account_id else None
         _, active_rule = app_db.active_rule()
         held = {item["symbol"]: item for item in portfolio_data["positions"]} if portfolio_data else {}
@@ -402,7 +461,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         trade_date: str | None = None,
         zone: str | None = None,
         min_score: int = Query(0, ge=0, le=8),
-        _: dict[str, Any] = Depends(require_user),
     ) -> Response:
         result = candidate_search(trade_date=trade_date, zone=zone, min_score=min_score, page=1, page_size=100)
         output = io.StringIO()
@@ -413,7 +471,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(output.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=candidates.csv"})
 
     @app.get("/api/v1/candidates/{candidate_id}")
-    def candidate_detail(candidate_id: int, _: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    def candidate_detail(candidate_id: int) -> dict[str, Any]:
         row = app_db.query_one(
             "SELECT c.*,p.id plan_id,p.status plan_status,p.current_entry_low,p.current_entry_high,"
             "p.current_stop_price,p.current_zone,p.note FROM candidate c "
@@ -432,7 +490,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def update_candidate_status(
         candidate_id: int,
         payload: CandidateStatusInput,
-        user: dict[str, Any] = Depends(require_csrf),
+        user: dict[str, Any] = Depends(require_admin_csrf),
     ) -> dict[str, bool]:
         current = app_db.query_one("SELECT lifecycle_status FROM candidate WHERE id=?", (candidate_id,))
         if current is None:
@@ -468,7 +526,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def revise_plan(
         plan_id: int,
         payload: PlanRevisionInput,
-        user: dict[str, Any] = Depends(require_csrf),
+        user: dict[str, Any] = Depends(require_admin_csrf),
     ) -> dict[str, bool]:
         if payload.stop_price >= payload.entry_low or payload.entry_low >= payload.entry_high:
             raise HTTPException(422, "必须满足止损价 < 买入下沿 < 买入上沿")
@@ -503,8 +561,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         account_id: int | None = None,
         page: int = Query(1, ge=1),
         page_size: int = Query(30, ge=1, le=100),
-        _: dict[str, Any] = Depends(require_user),
+        user: dict[str, Any] | None = Depends(optional_user),
     ) -> dict[str, Any]:
+        if account_id:
+            if user is None:
+                raise HTTPException(401, "登录后才可筛选个人组合")
+            account_for_user(account_id, user)
         clauses = ["1=1"]
         params: list[Any] = []
         for sql, value in (("p.status=?", status), ("p.current_zone=?", zone), ("p.account_id=?", account_id)):
@@ -521,7 +583,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         rows = app_db.query_all(
             "SELECT p.*,c.symbol,c.name,c.industry,c.trade_date,c.total_score,c.confidence,"
-            "c.consensus_count,c.real_close,c.lifecycle_status,r.data_fresh,a.name account_name "
+            "c.consensus_count,c.real_close,c.lifecycle_status,r.data_fresh,"
+            "COALESCE(a.display_name,a.name) account_name "
             "FROM trade_plan p JOIN candidate c ON c.id=p.candidate_id "
             "JOIN pipeline_run r ON r.id=c.run_id LEFT JOIN account a ON a.id=p.account_id "
             f"WHERE {where} ORDER BY c.trade_date DESC,c.total_score DESC,p.id DESC LIMIT ? OFFSET ?",
@@ -530,6 +593,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _, active_rule = app_db.active_rule()
         portfolio_cache: dict[int, dict[str, Any]] = {}
         for row in rows:
+            if not user or user.get("role") != "ADMIN":
+                row["account_id"] = None
+                row["account_name"] = None
+                row["suggested_quantity"] = 0
+                continue
             assigned = int(row["account_id"]) if row.get("account_id") else None
             if assigned and row["data_fresh"]:
                 portfolio_data = portfolio_cache.setdefault(assigned, app.state.ledger.portfolio(assigned))
@@ -547,16 +615,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"items": rows, "total": int(total["count"] if total else 0), "page": page, "page_size": page_size}
 
     @app.get("/api/v1/plans/{plan_id}")
-    def plan_detail(plan_id: int, _: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    def plan_detail(
+        plan_id: int, user: dict[str, Any] | None = Depends(optional_user)
+    ) -> dict[str, Any]:
         row = app_db.query_one(
             "SELECT p.*,c.symbol,c.name,c.industry,c.trade_date,c.total_score,c.confidence,"
-            "c.consensus_count,c.real_close,c.lifecycle_status,r.data_fresh,a.name account_name "
+            "c.consensus_count,c.real_close,c.lifecycle_status,r.data_fresh,"
+            "COALESCE(a.display_name,a.name) account_name "
             "FROM trade_plan p JOIN candidate c ON c.id=p.candidate_id "
             "JOIN pipeline_run r ON r.id=c.run_id LEFT JOIN account a ON a.id=p.account_id WHERE p.id=?",
             (plan_id,),
         )
         if row is None:
             raise HTTPException(404, "计划不存在")
+        if not user or user.get("role") != "ADMIN":
+            row["account_id"] = None
+            row["account_name"] = None
+            row["suggested_quantity"] = 0
         row["revisions"] = app_db.query_all(
             "SELECT * FROM trade_plan_revision WHERE plan_id=? ORDER BY id DESC", (plan_id,)
         )
@@ -568,7 +643,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.put("/api/v1/plans/{plan_id}/status")
     def update_plan_status(
-        plan_id: int, payload: PlanStatusInput, user: dict[str, Any] = Depends(require_csrf)
+        plan_id: int,
+        payload: PlanStatusInput,
+        user: dict[str, Any] = Depends(require_admin_csrf),
     ) -> dict[str, bool]:
         plan = app_db.query_one("SELECT * FROM trade_plan WHERE id=?", (plan_id,))
         if plan is None:
@@ -600,7 +677,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def stock_search(
         q: str = Query(min_length=1, max_length=30),
         limit: int = Query(12, ge=1, le=50),
-        _: dict[str, Any] = Depends(require_user),
     ) -> list[dict[str, Any]]:
         with sqlite3.connect(settings.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -618,12 +694,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return result
 
     @app.get("/api/v1/watchlist")
-    def watchlist(_: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
+    def watchlist(
+        user: dict[str, Any] | None = Depends(optional_user),
+    ) -> list[dict[str, Any]]:
+        if user is None:
+            return []
         rows = app_db.query_all(
             "SELECT w.*,COALESCE(p.name,w.symbol) name,p.industry,s.close,s.date quote_date "
             "FROM watchlist_item w LEFT JOIN stock_profile p ON p.symbol=w.symbol "
             "LEFT JOIN market_snapshot s ON s.symbol=w.symbol AND s.date=(SELECT MAX(s2.date) FROM market_snapshot s2 WHERE s2.symbol=w.symbol) "
-            "ORDER BY w.group_name,w.updated_at DESC"
+            "WHERE w.owner_user_id=? ORDER BY w.group_name,w.updated_at DESC",
+            (user["user_id"],),
         )
         for row in rows:
             close = row.get("close")
@@ -640,9 +721,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             with app_db.transaction() as conn:
                 cursor = conn.execute(
-                    "INSERT INTO watchlist_item(symbol,group_name,note,target_price,watch_price,created_at,updated_at) "
-                    "VALUES (?,?,?,?,?,?,?)",
-                    (payload.symbol, payload.group_name, payload.note, payload.target_price, payload.watch_price, now, now),
+                    "INSERT INTO watchlist_item(owner_user_id,symbol,group_name,note,target_price,"
+                    "watch_price,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        user["user_id"], payload.symbol, payload.group_name, payload.note,
+                        payload.target_price, payload.watch_price, now, now,
+                    ),
                 )
                 item_id = int(cursor.lastrowid)
         except sqlite3.IntegrityError as exc:
@@ -654,8 +738,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def edit_watchlist(item_id: int, payload: WatchlistPatch, user: dict[str, Any] = Depends(require_csrf)) -> dict[str, bool]:
         with app_db.transaction() as conn:
             cursor = conn.execute(
-                "UPDATE watchlist_item SET group_name=?,note=?,target_price=?,watch_price=?,updated_at=? WHERE id=?",
-                (payload.group_name, payload.note, payload.target_price, payload.watch_price, utc_now(), item_id),
+                "UPDATE watchlist_item SET group_name=?,note=?,target_price=?,watch_price=?,"
+                "updated_at=? WHERE id=? AND owner_user_id=?",
+                (
+                    payload.group_name, payload.note, payload.target_price,
+                    payload.watch_price, utc_now(), item_id, user["user_id"],
+                ),
             )
             if cursor.rowcount == 0:
                 raise HTTPException(404, "自选股不存在")
@@ -665,14 +753,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.delete("/api/v1/watchlist/{item_id}", status_code=204)
     def delete_watchlist(item_id: int, user: dict[str, Any] = Depends(require_csrf)) -> Response:
         with app_db.transaction() as conn:
-            cursor = conn.execute("DELETE FROM watchlist_item WHERE id=?", (item_id,))
+            cursor = conn.execute(
+                "DELETE FROM watchlist_item WHERE id=? AND owner_user_id=?",
+                (item_id, user["user_id"]),
+            )
             if cursor.rowcount == 0:
                 raise HTTPException(404, "自选股不存在")
         app_db.audit(user["username"], "DELETE_WATCHLIST", "watchlist_item", item_id)
         return Response(status_code=204)
 
     @app.get("/api/v1/stocks/{symbol}")
-    def stock_detail(symbol: str, _: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    def stock_detail(
+        symbol: str, user: dict[str, Any] | None = Depends(optional_user)
+    ) -> dict[str, Any]:
         with sqlite3.connect(settings.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -700,30 +793,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         for item in candidates_history:
             item["strategies"] = json.loads(item.pop("strategies_json"))
-        fills = app_db.query_all(
-            "SELECT f.*,a.name account_name,r.id reversal_id FROM trade_fill f JOIN account a ON a.id=f.account_id "
-            "LEFT JOIN trade_fill_reversal r ON r.fill_id=f.id WHERE f.symbol=? ORDER BY f.trade_date DESC,f.id DESC LIMIT 50",
-            (symbol,),
+        user_accounts = visible_accounts(user)
+        account_ids = [int(account["id"]) for account in user_accounts]
+        fills: list[dict[str, Any]] = []
+        if account_ids:
+            placeholders = ",".join("?" for _ in account_ids)
+            fills = app_db.query_all(
+                "SELECT f.*,COALESCE(a.display_name,a.name) account_name,r.id reversal_id "
+                "FROM trade_fill f JOIN account a ON a.id=f.account_id "
+                "LEFT JOIN trade_fill_reversal r ON r.fill_id=f.id WHERE f.symbol=? "
+                f"AND f.account_id IN ({placeholders}) "
+                "ORDER BY f.trade_date DESC,f.id DESC LIMIT 50",
+                tuple([symbol, *account_ids]),
+            )
+        watch = (
+            app_db.query_one(
+                "SELECT * FROM watchlist_item WHERE symbol=? AND owner_user_id=?",
+                (symbol, user["user_id"]),
+            )
+            if user else None
         )
-        watch = app_db.query_one("SELECT * FROM watchlist_item WHERE symbol=?", (symbol,))
         positions = []
-        for account in app_db.query_all("SELECT id,name FROM account ORDER BY id"):
+        for account in user_accounts:
             position = next((p for p in app.state.ledger.portfolio(int(account["id"]))["positions"] if p["symbol"] == symbol), None)
             if position:
-                positions.append({**position, "account_id": account["id"], "account_name": account["name"]})
+                positions.append({
+                    **position,
+                    "account_id": account["id"],
+                    "account_name": account.get("display_name") or account["name"],
+                })
         return {"symbol": symbol, "profile": profile, "snapshot": snapshot, "bars": bars, "candidates": candidates_history, "fills": fills, "watchlist": watch, "positions": positions}
 
     @app.get("/api/v1/accounts")
-    def accounts(_: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
-        rows = app_db.query_all("SELECT * FROM account ORDER BY id")
-        return [{**row, "portfolio": app.state.ledger.portfolio(int(row["id"]))} for row in rows]
+    def accounts(
+        user: dict[str, Any] | None = Depends(optional_user),
+    ) -> list[dict[str, Any]]:
+        rows = visible_accounts(user)
+        return [
+            {**public_account(row), "portfolio": app.state.ledger.portfolio(int(row["id"]))}
+            for row in rows
+        ]
 
     @app.post("/api/v1/accounts")
     def create_account(
         payload: AccountInput, user: dict[str, Any] = Depends(require_csrf)
     ) -> dict[str, int]:
+        if user.get("role") != "ADMIN" and payload.account_type != "PAPER":
+            raise HTTPException(403, "普通用户只能创建模拟组合")
         try:
-            account_id = app.state.ledger.create_account(**payload.model_dump())
+            account_id = app.state.ledger.create_account(
+                **payload.model_dump(),
+                owner_user_id=int(user["user_id"]),
+                actor=str(user["username"]),
+            )
         except (LedgerError, sqlite3.IntegrityError) as exc:
             raise HTTPException(422, str(exc)) from exc
         app_db.audit(user["username"], "CREATE_ACCOUNT_API", "account", account_id)
@@ -733,8 +855,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def add_fill(
         account_id: int,
         payload: FillInput,
-        _: dict[str, Any] = Depends(require_csrf),
+        user: dict[str, Any] = Depends(require_csrf),
     ) -> dict[str, Any]:
+        account_for_user(account_id, user)
+        if user.get("role") != "ADMIN" and payload.plan_id is not None:
+            raise HTTPException(403, "普通用户请通过模拟组合手动录入成交")
         try:
             return app.state.ledger.add_fill(account_id=account_id, **payload.model_dump())
         except LedgerError as exc:
@@ -744,8 +869,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def add_cash_event(
         account_id: int,
         payload: CashEventInput,
-        _: dict[str, Any] = Depends(require_csrf),
+        user: dict[str, Any] = Depends(require_csrf),
     ) -> dict[str, int]:
+        account_for_user(account_id, user)
         try:
             event_id = app.state.ledger.add_cash_event(account_id, **payload.model_dump())
         except LedgerError as exc:
@@ -753,25 +879,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": event_id}
 
     @app.get("/api/v1/accounts/{account_id}/portfolio")
-    def portfolio(account_id: int, _: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    def portfolio(
+        account_id: int, user: dict[str, Any] = Depends(require_user)
+    ) -> dict[str, Any]:
+        account_for_user(account_id, user)
         return app.state.ledger.portfolio(account_id)
 
     @app.get("/api/v1/accounts/{account_id}/fills")
-    def account_fills(account_id: int, _: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
+    def account_fills(
+        account_id: int, user: dict[str, Any] = Depends(require_user)
+    ) -> list[dict[str, Any]]:
+        account_for_user(account_id, user)
         return app.state.ledger.list_fills(account_id)
 
     @app.get("/api/v1/accounts/{account_id}/cash-events")
-    def account_cash_events(account_id: int, _: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
+    def account_cash_events(
+        account_id: int, user: dict[str, Any] = Depends(require_user)
+    ) -> list[dict[str, Any]]:
+        account_for_user(account_id, user)
         return app.state.ledger.list_cash_events(account_id)
 
     @app.get("/api/v1/accounts/{account_id}/snapshots")
-    def account_snapshots(account_id: int, _: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
+    def account_snapshots(
+        account_id: int, user: dict[str, Any] = Depends(require_user)
+    ) -> list[dict[str, Any]]:
+        account_for_user(account_id, user)
         return app_db.query_all(
             "SELECT * FROM account_snapshot WHERE account_id=? ORDER BY date", (account_id,)
         )
 
     @app.post("/api/v1/accounts/{account_id}/fills/{fill_id}/reverse")
     def reverse_fill(account_id: int, fill_id: int, payload: ReversalInput, user: dict[str, Any] = Depends(require_csrf)) -> dict[str, int]:
+        account_for_user(account_id, user)
         try:
             reversal_id = app.state.ledger.reverse_fill(account_id, fill_id, payload.reason, user["username"])
         except LedgerError as exc:
@@ -780,6 +919,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/v1/accounts/{account_id}/cash-events/{event_id}/reverse")
     def reverse_cash_event(account_id: int, event_id: int, payload: ReversalInput, user: dict[str, Any] = Depends(require_csrf)) -> dict[str, int]:
+        account_for_user(account_id, user)
         try:
             reversal_id = app.state.ledger.reverse_cash_event(account_id, event_id, payload.reason, user["username"])
         except LedgerError as exc:
@@ -788,6 +928,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.put("/api/v1/accounts/{account_id}/positions/{symbol}/risk")
     def update_position_risk(account_id: int, symbol: str, payload: PositionRiskInput, user: dict[str, Any] = Depends(require_csrf)) -> dict[str, bool]:
+        account_for_user(account_id, user)
         try:
             app.state.ledger.set_position_risk(account_id, symbol, payload.stop_price, payload.note, user["username"])
         except LedgerError as exc:
@@ -795,7 +936,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/v1/accounts/{account_id}/export/{kind}.csv")
-    def export_account(account_id: int, kind: Literal["fills", "cash"], _: dict[str, Any] = Depends(require_user)) -> Response:
+    def export_account(
+        account_id: int,
+        kind: Literal["fills", "cash"],
+        user: dict[str, Any] = Depends(require_user),
+    ) -> Response:
+        account_for_user(account_id, user)
         output = io.StringIO()
         writer = csv.writer(output)
         if kind == "fills":
@@ -809,7 +955,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(output.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f"attachment; filename=account-{account_id}-{kind}.csv"})
 
     @app.get("/api/v1/reports")
-    def reports(_: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
+    def reports() -> list[dict[str, Any]]:
         rows = app_db.query_all(
             "SELECT id,run_id,trade_date,title,summary_json,created_at FROM daily_report ORDER BY trade_date DESC"
         )
@@ -818,7 +964,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return rows
 
     @app.get("/api/v1/reports/{report_id}")
-    def report_detail(report_id: int, _: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    def report_detail(report_id: int) -> dict[str, Any]:
         row = app_db.query_one("SELECT * FROM daily_report WHERE id=?", (report_id,))
         if row is None:
             raise HTTPException(404, "日报不存在")
@@ -835,7 +981,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/analytics/candidates")
     def candidate_analytics(
         group_by: Literal["strategy", "zone", "score", "confidence"] = "zone",
-        _: dict[str, Any] = Depends(require_user),
     ) -> list[dict[str, Any]]:
         expression = {
             "zone": "zone", "score": "CAST(total_score AS TEXT)", "confidence": "confidence",
@@ -849,23 +994,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.get("/api/v1/reports/{report_id}/html", response_class=HTMLResponse)
-    def report_html(report_id: int, _: dict[str, Any] = Depends(require_user)) -> str:
+    def report_html(report_id: int) -> str:
         row = app_db.query_one("SELECT html FROM daily_report WHERE id=?", (report_id,))
         if row is None:
             raise HTTPException(404, "日报不存在")
         return str(row["html"])
 
     @app.get("/api/v1/runs")
-    def runs(_: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
+    def runs(_: dict[str, Any] = Depends(require_admin)) -> list[dict[str, Any]]:
         return app_db.query_all("SELECT * FROM pipeline_run ORDER BY trade_date DESC,id DESC LIMIT 100")
 
     @app.get("/api/v1/runs/status")
-    def daily_run_status(_: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    def daily_run_status(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         job = latest_job(app_db, "DAILY_UPDATE")
         return job or get_daily_job(app_db)
 
     @app.post("/api/v1/runs/trigger", status_code=202)
-    def trigger_daily_run(user: dict[str, Any] = Depends(require_csrf)) -> dict[str, Any]:
+    def trigger_daily_run(user: dict[str, Any] = Depends(require_admin_csrf)) -> dict[str, Any]:
         try:
             job = enqueue_job(app_db, "DAILY_UPDATE", user["username"])
         except JobBusyError as exc:
@@ -877,14 +1022,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def jobs(
         status: str | None = None,
         limit: int = Query(100, ge=1, le=500),
-        _: dict[str, Any] = Depends(require_user),
+        _: dict[str, Any] = Depends(require_admin),
     ) -> list[dict[str, Any]]:
         if status:
             return app_db.query_all("SELECT * FROM job_run WHERE status=? ORDER BY id DESC LIMIT ?", (status, limit))
         return app_db.query_all("SELECT * FROM job_run ORDER BY id DESC LIMIT ?", (limit,))
 
     @app.get("/api/v1/jobs/{job_id}")
-    def job_detail(job_id: int, _: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    def job_detail(job_id: int, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         job = get_job(app_db, job_id)
         if job is None:
             raise HTTPException(404, "任务不存在")
@@ -894,7 +1039,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return job
 
     @app.post("/api/v1/jobs", status_code=202)
-    def create_job(payload: JobInput, user: dict[str, Any] = Depends(require_csrf)) -> dict[str, Any]:
+    def create_job(payload: JobInput, user: dict[str, Any] = Depends(require_admin_csrf)) -> dict[str, Any]:
         if payload.job_type == "BACKFILL" and payload.confirmation != "BACKFILL":
             raise HTTPException(422, "历史回填必须输入 BACKFILL 确认")
         try:
@@ -905,7 +1050,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return job
 
     @app.post("/api/v1/jobs/{job_id}/retry", status_code=202)
-    def retry_job(job_id: int, user: dict[str, Any] = Depends(require_csrf)) -> dict[str, Any]:
+    def retry_job(job_id: int, user: dict[str, Any] = Depends(require_admin_csrf)) -> dict[str, Any]:
         old = get_job(app_db, job_id)
         if old is None:
             raise HTTPException(404, "任务不存在")
@@ -917,7 +1062,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, str(exc)) from exc
 
     @app.post("/api/v1/jobs/{job_id}/cancel", status_code=202)
-    def cancel_job(job_id: int, user: dict[str, Any] = Depends(require_csrf)) -> dict[str, Any]:
+    def cancel_job(job_id: int, user: dict[str, Any] = Depends(require_admin_csrf)) -> dict[str, Any]:
         if get_job(app_db, job_id) is None:
             raise HTTPException(404, "任务不存在")
         try:
@@ -931,7 +1076,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return job
 
     @app.get("/api/v1/rules")
-    def rules(_: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
+    def rules(_: dict[str, Any] = Depends(require_admin)) -> list[dict[str, Any]]:
         rows = app_db.query_all("SELECT * FROM rule_version ORDER BY id DESC")
         for row in rows:
             row["config"] = json.loads(row.pop("config_json"))
@@ -939,7 +1084,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/v1/rules")
     def create_rule(
-        payload: RuleInput, user: dict[str, Any] = Depends(require_csrf)
+        payload: RuleInput, user: dict[str, Any] = Depends(require_admin_csrf)
     ) -> dict[str, int]:
         try:
             config = RuleConfig.from_dict(payload.config).to_dict()
@@ -956,7 +1101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": rule_id}
 
     @app.get("/api/v1/settings")
-    def read_settings(_: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    def read_settings(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         return {
             "daily_run_time": app_db.get_setting("daily_run_time", settings.daily_run_time),
             "min_market_cap": float(app_db.get_setting("min_market_cap", str(settings.min_market_cap))),
@@ -966,7 +1111,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.put("/api/v1/settings")
     def update_settings(
-        payload: SettingsInput, user: dict[str, Any] = Depends(require_csrf)
+        payload: SettingsInput, user: dict[str, Any] = Depends(require_admin_csrf)
     ) -> dict[str, bool]:
         app_db.set_setting("daily_run_time", payload.daily_run_time)
         app_db.set_setting("min_market_cap", str(payload.min_market_cap))
@@ -974,7 +1119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/v1/system/health")
-    def system_health(_: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    def system_health(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         market_cap_date = None
         market_count = 0
         with sqlite3.connect(settings.db_path) as conn:
@@ -1002,7 +1147,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def audit_logs(
         action: str | None = None,
         limit: int = Query(100, ge=1, le=500),
-        _: dict[str, Any] = Depends(require_user),
+        _: dict[str, Any] = Depends(require_admin),
     ) -> list[dict[str, Any]]:
         rows = app_db.query_all(
             "SELECT * FROM audit_log WHERE (? IS NULL OR action=?) ORDER BY id DESC LIMIT ?",
@@ -1013,7 +1158,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return rows
 
     @app.get("/api/v1/backups")
-    def backups(_: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
+    def backups(_: dict[str, Any] = Depends(require_admin)) -> list[dict[str, Any]]:
         files: list[dict[str, Any]] = []
         for folder in (Path("backups/app"), Path("backups/market")):
             if not folder.exists():
@@ -1023,7 +1168,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return sorted(files, key=lambda item: item["created_at"], reverse=True)
 
     @app.post("/api/v1/backups", status_code=201)
-    def create_backup(user: dict[str, Any] = Depends(require_csrf)) -> dict[str, Any]:
+    def create_backup(user: dict[str, Any] = Depends(require_admin_csrf)) -> dict[str, Any]:
         target = backup_sqlite(settings.app_db_path, "backups/app", "sequoia_app", 30)
         app_db.audit(user["username"], "CREATE_BACKUP", "backup", target.name)
         return {"name": target.name, "size": target.stat().st_size}
@@ -1069,14 +1214,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": run_id}
 
     @app.get("/api/v1/backtests")
-    def backtests(_: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
+    def backtests() -> list[dict[str, Any]]:
         rows = app_db.query_all("SELECT * FROM backtest_run ORDER BY id DESC LIMIT 100")
         for row in rows:
             row["metrics"] = json.loads(row["metrics_json"]) if row.get("metrics_json") else None
         return rows
 
     @app.get("/api/v1/backtests/{run_id}")
-    def backtest_detail(run_id: int, _: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    def backtest_detail(run_id: int) -> dict[str, Any]:
         run = app_db.query_one("SELECT * FROM backtest_run WHERE id=?", (run_id,))
         if run is None:
             raise HTTPException(404, "回测不存在")
@@ -1090,7 +1235,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return run
 
     @app.get("/api/v1/backtests/{run_id}/trades.csv")
-    def export_backtest_trades(run_id: int, _: dict[str, Any] = Depends(require_user)) -> Response:
+    def export_backtest_trades(run_id: int) -> Response:
         if app_db.query_one("SELECT id FROM backtest_run WHERE id=?", (run_id,)) is None:
             raise HTTPException(404, "回测不存在")
         output = io.StringIO()

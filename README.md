@@ -58,7 +58,7 @@ cd web
 npm run dev
 ```
 
-浏览器访问 `http://127.0.0.1:5173`，使用 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 登录。
+浏览器访问 `http://127.0.0.1:5173`。游客可直接浏览公共投研数据，也可使用唯一账号 ID 和密码注册个人账号，无需绑定手机号或邮箱；个人账号可使用独立自选股和模拟组合。管理员使用 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 登录后可进入任务中心与系统管理。
 
 ### Docker 公网部署
 

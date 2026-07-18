@@ -5,7 +5,7 @@ test.beforeEach(async ({ page }) => {
     const path = new URL(route.request().url()).pathname;
     const emptyPage = { items: [], total: 0, page: 1, page_size: 30 };
     const responses: Record<string, unknown> = {
-      "/api/v1/auth/me": { username: "admin", csrf_token: "test-csrf" },
+      "/api/v1/auth/me": { username: "admin", role: "ADMIN", csrf_token: "test-csrf" },
       "/api/v1/dashboard": { run: null, summary: null, accounts: [], data_stale: true, top_candidates: [], risk_alerts: [], recent_activity: [], latest_job: null, ready_plan_count: 0 },
       "/api/v1/accounts": [], "/api/v1/watchlist": [], "/api/v1/plans": emptyPage,
       "/api/v1/reports": [], "/api/v1/backtests": [], "/api/v1/jobs": [],
@@ -31,6 +31,38 @@ test("核心工作台导航均可进入真实页面", async ({ page }) => {
     await page.getByRole("link", { name: link }).click();
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
   }
+});
+
+test("游客可浏览数据且看不到管理员功能", async ({ page }) => {
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ status: 401, json: { detail: "未登录" } }));
+
+  await page.goto("/dashboard");
+  await expect(page.getByRole("heading", { name: "核心决策工作台" })).toBeVisible();
+  await expect(page.getByText("游客浏览")).toBeVisible();
+  await expect(page.getByTitle("登录或注册").first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "任务中心" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "系统管理" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "更新数据" })).toHaveCount(0);
+
+  await page.goto("/settings");
+  await expect(page).toHaveURL(/\/dashboard$/);
+});
+
+test("游客可直接注册个人账号并进入模拟交易工作台", async ({ page }) => {
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ status: 401, json: { detail: "未登录" } }));
+  await page.route("**/api/v1/auth/register", (route) => route.fulfill({ status: 201, json: { username: "demo_user", role: "MEMBER", csrf_token: "member-csrf" } }));
+
+  await page.goto("/login");
+  await page.getByRole("button", { name: "注册", exact: true }).click();
+  await page.getByLabel("账号 ID").fill("demo_user");
+  await page.getByLabel("密码", { exact: true }).fill("demo-password");
+  await page.getByLabel("确认密码").fill("demo-password");
+  await page.getByRole("button", { name: "注册并登录" }).click();
+
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByText("demo_user").first()).toBeVisible();
+  await expect(page.getByText("个人账号")).toBeVisible();
+  await expect(page.getByRole("link", { name: "系统管理" })).toHaveCount(0);
 });
 
 test("首页机会指标卡跳转并带入候选位置筛选", async ({ page }) => {
