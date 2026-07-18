@@ -39,9 +39,12 @@ CREATE TABLE IF NOT EXISTS admin_user (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'MEMBER',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_username_nocase
+ON admin_user(username COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS auth_session (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -208,6 +211,8 @@ CREATE TABLE IF NOT EXISTS trade_plan_revision (
 CREATE TABLE IF NOT EXISTS account (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    owner_user_id INTEGER REFERENCES admin_user(id),
     account_type TEXT NOT NULL,
     initial_cash REAL NOT NULL,
     commission_rate REAL NOT NULL,
@@ -298,13 +303,15 @@ CREATE TABLE IF NOT EXISTS backtest_equity (
 
 CREATE TABLE IF NOT EXISTS watchlist_item (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    symbol TEXT NOT NULL UNIQUE,
+    owner_user_id INTEGER REFERENCES admin_user(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
     group_name TEXT NOT NULL DEFAULT '默认分组',
     note TEXT NOT NULL DEFAULT '',
     target_price REAL,
     watch_price REAL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    UNIQUE(owner_user_id, symbol)
 );
 
 CREATE TABLE IF NOT EXISTS account_snapshot (
@@ -433,6 +440,71 @@ class AppDatabase:
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migration(version,name,applied_at) VALUES (2,?,?)",
                 ("job_cancellation", utc_now()),
+            )
+            user_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(admin_user)").fetchall()
+            }
+            if "role" not in user_columns:
+                conn.execute(
+                    "ALTER TABLE admin_user ADD COLUMN role TEXT NOT NULL DEFAULT 'MEMBER'"
+                )
+                conn.execute("UPDATE admin_user SET role='ADMIN'")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_username_nocase "
+                "ON admin_user(username COLLATE NOCASE)"
+            )
+
+            account_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(account)").fetchall()
+            }
+            if "display_name" not in account_columns:
+                conn.execute("ALTER TABLE account ADD COLUMN display_name TEXT")
+                conn.execute("UPDATE account SET display_name=name")
+            if "owner_user_id" not in account_columns:
+                conn.execute(
+                    "ALTER TABLE account ADD COLUMN owner_user_id INTEGER REFERENCES admin_user(id)"
+                )
+                conn.execute(
+                    "UPDATE account SET owner_user_id=(SELECT id FROM admin_user "
+                    "WHERE role='ADMIN' ORDER BY id LIMIT 1)"
+                )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_account_owner ON account(owner_user_id,id)"
+            )
+
+            watchlist_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(watchlist_item)").fetchall()
+            }
+            if "owner_user_id" not in watchlist_columns:
+                conn.execute("DROP TABLE IF EXISTS watchlist_item_v3")
+                conn.execute(
+                    "CREATE TABLE watchlist_item_v3 ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    "owner_user_id INTEGER REFERENCES admin_user(id) ON DELETE CASCADE,"
+                    "symbol TEXT NOT NULL,group_name TEXT NOT NULL DEFAULT '默认分组',"
+                    "note TEXT NOT NULL DEFAULT '',target_price REAL,watch_price REAL,"
+                    "created_at TEXT NOT NULL,updated_at TEXT NOT NULL,"
+                    "UNIQUE(owner_user_id,symbol))"
+                )
+                conn.execute(
+                    "INSERT INTO watchlist_item_v3(id,owner_user_id,symbol,group_name,note,"
+                    "target_price,watch_price,created_at,updated_at) "
+                    "SELECT id,(SELECT id FROM admin_user WHERE role='ADMIN' ORDER BY id LIMIT 1),"
+                    "symbol,group_name,note,target_price,watch_price,created_at,updated_at "
+                    "FROM watchlist_item"
+                )
+                conn.execute("DROP TABLE watchlist_item")
+                conn.execute("ALTER TABLE watchlist_item_v3 RENAME TO watchlist_item")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_watchlist_owner ON "
+                "watchlist_item(owner_user_id,updated_at)"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migration(version,name,applied_at) VALUES (3,?,?)",
+                ("member_accounts", utc_now()),
             )
             conn.commit()
         self.ensure_default_rule()
