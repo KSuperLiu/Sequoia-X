@@ -14,6 +14,15 @@
 
 - 新增 390×844 手机视口测试，验证底部菜单贴合视口、可横向浏览并能进入系统管理页面。
 
+### 发布信息
+
+- 目标环境：生产服务器 `/opt/sequoia-x`，公网入口 `http://172.93.187.65/`。
+- 发布路径：功能分支 `codex/mobile-bottom-nav` 的提交 `3414280` 通过 PR #5 合并至生产分支 `codex/sequoia-trading-tracker`，生产部署提交为 `4b825ff4ceaca10aea7040e3b5c4ffc6940677b5`。
+- 部署前一致性备份：`sequoia_app_predeploy_20260718_132135.db`、`sequoia_v2_predeploy_20260718_132135.db`。
+- 数据库迁移：本版本无新增迁移，生产数据库保持版本 3 `member_accounts`。
+- 部署验收：API、Worker、Web 容器均正常运行，应用包版本为 2.2.1，API 健康检查和公网首页返回 HTTP 200，最近日志未发现异常，日常任务保持 `SUCCEEDED`。
+- 手机端验收：公网 HTML 与 CSS 已包含 `viewport-fit=cover`、底部安全区和横向滚动规则，并通过 390×844 外网手机视口截图检查，底部菜单可见且未遮挡页面内容。
+
 ## 2.2.0 - 2026-07-18
 
 ### 新增
