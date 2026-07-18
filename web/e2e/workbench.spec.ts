@@ -124,11 +124,18 @@ test("手机端底部菜单保持可见并可横向浏览", async ({ page }) => 
   await page.goto("/dashboard");
 
   const sidebar = page.locator(".sidebar");
+  const topbar = page.locator(".topbar");
   const navigation = page.getByRole("navigation", { name: "主菜单" });
   await expect(sidebar).toBeVisible();
+  await expect(topbar).toBeVisible();
+  await expect(topbar.getByPlaceholder("搜索股票代码或名称")).toBeVisible();
+  await expect(topbar.getByText("工作台", { exact: true })).toBeVisible();
   await expect(navigation).toBeVisible();
   await expect(page.getByRole("link", { name: "工作台" })).toBeVisible();
 
+  const topbarBox = await topbar.boundingBox();
+  expect(topbarBox).not.toBeNull();
+  expect(Math.round(topbarBox?.y || 0)).toBe(0);
   const box = await sidebar.boundingBox();
   expect(box).not.toBeNull();
   expect(Math.round((box?.y || 0) + (box?.height || 0))).toBe(844);
@@ -138,4 +145,81 @@ test("手机端底部菜单保持可见并可横向浏览", async ({ page }) => 
   await settings.evaluate((element) => element.scrollIntoView({ block: "nearest", inline: "center" }));
   await settings.click();
   await expect(page.getByRole("heading", { name: "系统管理" })).toBeVisible();
+  await expect(topbar.getByText("系统管理", { exact: true })).toBeVisible();
+});
+
+test("模拟账户买入 100 股可通过浏览器校验并提交", async ({ page }) => {
+  let submittedQuantity = 0;
+  const account = {
+    id: 1, name: "模拟组合", account_type: "PAPER", initial_cash: 1_000_000,
+    portfolio: { account_id: 1, cash: 1_000_000, market_value: 0, equity: 1_000_000, total_weight: 0, unrealized_pnl: 0, realized_pnl: 0, positions: [] },
+  };
+  await page.route("**/api/v1/accounts**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/accounts" && request.method() === "GET") return route.fulfill({ json: [account] });
+    if (path === "/api/v1/accounts/1/fills" && request.method() === "POST") {
+      submittedQuantity = Number(request.postDataJSON().quantity);
+      return route.fulfill({ json: { warnings: [] } });
+    }
+    if (request.method() === "GET") return route.fulfill({ json: [] });
+    return route.fallback();
+  });
+
+  await page.goto("/portfolio?symbol=600763&price=36.64");
+  const quantity = page.getByLabel("数量");
+  await expect(quantity).toHaveValue("100");
+  expect(await quantity.evaluate((input: HTMLInputElement) => ({ min: input.min, step: input.step, valid: input.checkValidity() }))).toEqual({ min: "100", step: "100", valid: true });
+  await page.getByRole("button", { name: "保存成交" }).click();
+  expect(submittedQuantity).toBe(100);
+});
+
+test("机会中心提供中文策略指南和策略筛选", async ({ page }) => {
+  await page.goto("/candidates");
+  await expect(page.getByRole("heading", { name: "均线放量金叉" })).toHaveCount(0);
+  await page.getByRole("button", { name: "策略说明" }).click();
+  const guide = page.locator(".modal-wide");
+  await expect(guide.getByRole("heading", { name: "选股策略说明" })).toBeVisible();
+  await expect(guide.getByRole("heading", { name: "均线放量金叉" })).toBeVisible();
+  await expect(guide.getByRole("heading", { name: "海龟突破（A股改良）" })).toBeVisible();
+  await expect(guide.getByRole("heading", { name: "高位窄幅旗形" })).toBeVisible();
+  await expect(guide.getByRole("heading", { name: "涨停后放量洗盘" })).toBeVisible();
+  await expect(guide.getByRole("heading", { name: "RPS 强势临近新高" })).toBeVisible();
+  await expect(guide.getByRole("heading", { name: "近期定向增发公告" })).toBeVisible();
+  await expect(guide.getByText("当日成交量大于 20 日均量的 1.5 倍")).toBeVisible();
+  await expect(guide.getByText(/策略只负责从市场中筛选形态，不等同于买入建议/)).toBeVisible();
+  await guide.getByRole("button", { name: "关闭" }).click();
+
+  await page.getByLabel("策略筛选").selectOption("RpsBreakoutStrategy");
+  await expect(page).toHaveURL(/strategy=RpsBreakoutStrategy/);
+});
+
+test("回测表单使用中文策略名并显示所选策略说明", async ({ page }) => {
+  await page.goto("/backtests");
+  await page.getByRole("button", { name: "新建回测" }).click();
+  const strategy = page.getByLabel("策略");
+  await expect(strategy).toContainText("海龟突破（A股改良） · TurtleTradeStrategy");
+  await expect(page.getByText("寻找突破近 20 日高点")).toHaveCount(0);
+  await page.getByRole("button", { name: "查看当前策略说明" }).click();
+  await expect(page.locator(".modal-wide").last()).toContainText("寻找突破近 20 日高点");
+  await page.locator(".modal-wide").last().getByRole("button", { name: "关闭" }).click();
+
+  await strategy.selectOption("RpsBreakoutStrategy");
+  await page.getByRole("button", { name: "查看当前策略说明" }).click();
+  await expect(page.locator(".modal-wide").last()).toContainText("RPS 强势临近新高");
+  await expect(page.locator(".modal-wide").last()).toContainText("追高风险");
+});
+
+test("候选列表按 A 股习惯显示反弹红色和回撤绿色", async ({ page }) => {
+  await page.route("**/api/v1/candidates/search**", (route) => route.fulfill({ json: {
+    items: [{ id: 1, symbol: "600763", name: "通策医疗", industry: "医疗服务", trade_date: "2026-07-18", strategies: ["TurtleTradeStrategy"], consensus_count: 1, confidence: "MEDIUM", drawdown_60: 0.2, rebound_60: 0.15, volume_ratio: 1.5, total_score: 7, real_close: 36.64, pe_ttm: 25, current_zone: "LEFT", zone: "LEFT", current_entry_low: 35, current_entry_high: 37, current_stop_price: 34, lifecycle_status: "NEW", plan_status: "DRAFT" }],
+    total: 1, page: 1, page_size: 30,
+  } }));
+
+  await page.goto("/candidates");
+  const row = page.getByRole("row").filter({ hasText: "通策医疗" });
+  await expect(row.locator(".market-down")).toHaveText("-20.0%");
+  await expect(row.locator(".market-up")).toHaveText("+15.0%");
+  await expect(row.locator(".market-down")).toHaveCSS("color", "rgb(34, 169, 107)");
+  await expect(row.locator(".market-up")).toHaveCSS("color", "rgb(229, 72, 64)");
 });
