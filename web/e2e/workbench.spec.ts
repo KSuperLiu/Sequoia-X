@@ -118,3 +118,24 @@ test("网页手动任务可以从任务中心中止", async ({ page }) => {
   await expect(page.getByText("等待任务已取消")).toBeVisible();
   expect(cancelCalled).toBe(true);
 });
+
+test("手机端底部菜单保持可见并可横向浏览", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/dashboard");
+
+  const sidebar = page.locator(".sidebar");
+  const navigation = page.getByRole("navigation", { name: "主菜单" });
+  await expect(sidebar).toBeVisible();
+  await expect(navigation).toBeVisible();
+  await expect(page.getByRole("link", { name: "工作台" })).toBeVisible();
+
+  const box = await sidebar.boundingBox();
+  expect(box).not.toBeNull();
+  expect(Math.round((box?.y || 0) + (box?.height || 0))).toBe(844);
+  expect(await navigation.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+
+  const settings = page.getByRole("link", { name: "系统管理" });
+  await settings.evaluate((element) => element.scrollIntoView({ block: "nearest", inline: "center" }));
+  await settings.click();
+  await expect(page.getByRole("heading", { name: "系统管理" })).toBeVisible();
+});
