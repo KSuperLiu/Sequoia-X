@@ -22,7 +22,11 @@ from sequoia_x.app.auth import (
     require_csrf,
     require_user,
 )
-from sequoia_x.app.backtest import SUPPORTED_STRATEGIES, BacktestService
+from sequoia_x.app.backtest import (
+    SUPPORTED_STRATEGIES,
+    BacktestCancellationError,
+    BacktestService,
+)
 from sequoia_x.app.backup import backup_sqlite
 from sequoia_x.app.daily_job import get_daily_job
 from sequoia_x.app.db import AppDatabase, utc_now
@@ -164,7 +168,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Sequoia-X API",
-        version="2.2.2",
+        version="2.2.3",
         lifespan=lifespan,
         docs_url="/docs" if settings.enable_api_docs else None,
         redoc_url=None,
@@ -1213,6 +1217,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         tasks.add_task(app.state.backtest.execute, run_id)
         return {"id": run_id}
 
+    @app.post("/api/v1/backtests/{run_id}/cancel", status_code=202)
+    def cancel_backtest(
+        run_id: int,
+        user: dict[str, Any] = Depends(require_csrf),
+    ) -> dict[str, Any]:
+        try:
+            run = app.state.backtest.request_cancel(run_id, user["username"])
+        except BacktestCancellationError as exc:
+            status_code = 404 if "不存在" in str(exc) else 409
+            raise HTTPException(status_code, str(exc)) from exc
+        app_db.audit(
+            user["username"], "CANCEL_BACKTEST", "backtest_run", run_id,
+            {"status": run["status"]},
+        )
+        return run
+
     @app.get("/api/v1/backtests")
     def backtests() -> list[dict[str, Any]]:
         rows = app_db.query_all("SELECT * FROM backtest_run ORDER BY id DESC LIMIT 100")
@@ -1231,6 +1251,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         run["equity"] = app_db.query_all(
             "SELECT date,equity,benchmark FROM backtest_equity WHERE backtest_run_id=? ORDER BY date", (run_id,)
+        )
+        run["logs"] = app_db.query_all(
+            "SELECT id,level,message,created_at FROM backtest_log "
+            "WHERE backtest_run_id=? ORDER BY id DESC LIMIT 500",
+            (run_id,),
         )
         return run
 

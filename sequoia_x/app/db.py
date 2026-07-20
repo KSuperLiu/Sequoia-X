@@ -273,8 +273,24 @@ CREATE TABLE IF NOT EXISTS backtest_run (
     metrics_json TEXT,
     error_message TEXT,
     created_at TEXT NOT NULL,
-    finished_at TEXT
+    started_at TEXT,
+    finished_at TEXT,
+    current_stage TEXT,
+    progress_current INTEGER NOT NULL DEFAULT 0,
+    progress_total INTEGER NOT NULL DEFAULT 0,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    cancel_requested_at TEXT,
+    cancel_requested_by TEXT
 );
+
+CREATE TABLE IF NOT EXISTS backtest_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    backtest_run_id INTEGER NOT NULL REFERENCES backtest_run(id) ON DELETE CASCADE,
+    level TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_backtest_log_run_id ON backtest_log(backtest_run_id, id);
 
 CREATE TABLE IF NOT EXISTS backtest_trade (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -505,6 +521,39 @@ class AppDatabase:
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migration(version,name,applied_at) VALUES (3,?,?)",
                 ("member_accounts", utc_now()),
+            )
+
+            backtest_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(backtest_run)").fetchall()
+            }
+            backtest_column_sql = {
+                "started_at": "TEXT",
+                "current_stage": "TEXT",
+                "progress_current": "INTEGER NOT NULL DEFAULT 0",
+                "progress_total": "INTEGER NOT NULL DEFAULT 0",
+                "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
+                "cancel_requested_at": "TEXT",
+                "cancel_requested_by": "TEXT",
+            }
+            for column, definition in backtest_column_sql.items():
+                if column not in backtest_columns:
+                    conn.execute(
+                        f"ALTER TABLE backtest_run ADD COLUMN {column} {definition}"
+                    )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS backtest_log ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "backtest_run_id INTEGER NOT NULL REFERENCES backtest_run(id) ON DELETE CASCADE,"
+                "level TEXT NOT NULL,message TEXT NOT NULL,created_at TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_backtest_log_run_id "
+                "ON backtest_log(backtest_run_id,id)"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migration(version,name,applied_at) VALUES (4,?,?)",
+                ("backtest_observability", utc_now()),
             )
             conn.commit()
         self.ensure_default_rule()

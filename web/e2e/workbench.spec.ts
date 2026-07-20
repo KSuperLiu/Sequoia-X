@@ -210,6 +210,41 @@ test("回测表单使用中文策略名并显示所选策略说明", async ({ pa
   await expect(page.locator(".modal-wide").last()).toContainText("追高风险");
 });
 
+test("运行中的回测可以查看进度日志并提交中止请求", async ({ page }) => {
+  let cancelRequested = 0;
+  const run = {
+    id: 12, strategy_name: "TurtleTradeStrategy", start_date: "2025-01-01",
+    end_date: "2025-12-31", initial_cash: 1_000_000, status: "RUNNING",
+    current_stage: "模拟交易", progress_current: 80, progress_total: 240,
+  };
+  await page.route("**/api/v1/backtests**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/backtests/12/cancel" && request.method() === "POST") {
+      cancelRequested = 1;
+      return route.fulfill({ json: { ...run, cancel_requested: 1, current_stage: "正在中止" } });
+    }
+    if (path === "/api/v1/backtests/12") return route.fulfill({ json: {
+      ...run, cancel_requested: cancelRequested,
+      current_stage: cancelRequested ? "正在中止" : "模拟交易",
+      logs: [{ id: 1, level: "INFO", message: "模拟进度 80/240", created_at: "2026-07-20T01:00:00Z" }],
+      trades: [], equity: [],
+    } });
+    if (path === "/api/v1/backtests") return route.fulfill({ json: [{ ...run, cancel_requested: cancelRequested }] });
+    return route.fallback();
+  });
+  page.on("dialog", (dialog) => dialog.accept());
+
+  await page.goto("/backtests");
+  await expect(page.getByText("模拟交易 · 80/240")).toBeVisible();
+  await page.getByRole("button", { name: "日志与详情" }).click();
+  await expect(page.getByText("模拟进度 80/240")).toBeVisible();
+  await page.getByRole("button", { name: "中止回测" }).click();
+  await expect(page.getByText("中止请求已提交")).toBeVisible();
+  await expect(page.getByText("正在中止", { exact: true })).toBeVisible();
+  expect(cancelRequested).toBe(1);
+});
+
 test("候选列表按 A 股习惯显示反弹红色和回撤绿色", async ({ page }) => {
   await page.route("**/api/v1/candidates/search**", (route) => route.fulfill({ json: {
     items: [{ id: 1, symbol: "600763", name: "通策医疗", industry: "医疗服务", trade_date: "2026-07-18", strategies: ["TurtleTradeStrategy"], consensus_count: 1, confidence: "MEDIUM", drawdown_60: 0.2, rebound_60: 0.15, volume_ratio: 1.5, total_score: 7, real_close: 36.64, pe_ttm: 25, current_zone: "LEFT", zone: "LEFT", current_entry_low: 35, current_entry_high: 37, current_stop_price: 34, lifecycle_status: "NEW", plan_status: "DRAFT" }],
