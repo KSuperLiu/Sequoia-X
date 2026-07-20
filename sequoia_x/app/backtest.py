@@ -24,6 +24,14 @@ SUPPORTED_STRATEGIES = {
 }
 
 
+class BacktestCancellationError(RuntimeError):
+    """回测不能中止，或当前状态不允许中止。"""
+
+
+class BacktestCancelled(RuntimeError):
+    """回测在安全检查点收到中止请求。"""
+
+
 @dataclass
 class OpenPosition:
     symbol: str
@@ -40,6 +48,35 @@ class BacktestService:
     def __init__(self, app_db: AppDatabase, engine: DataEngine) -> None:
         self.app_db = app_db
         self.engine = engine
+        self._recover_interrupted_runs()
+
+    def _recover_interrupted_runs(self) -> None:
+        """API 重启后，结束已失去后台执行线程的遗留任务。"""
+        with self.app_db.transaction() as conn:
+            rows = conn.execute(
+                "SELECT id,status,cancel_requested FROM backtest_run "
+                "WHERE status IN ('PENDING','RUNNING')"
+            ).fetchall()
+            now = utc_now()
+            for row in rows:
+                cancelled = bool(row["cancel_requested"])
+                status = "CANCELLED" if cancelled else "FAILED"
+                stage = "已取消" if cancelled else "服务中断"
+                message = (
+                    "API 服务重启前已收到中止请求，回测已清理"
+                    if cancelled
+                    else "API 服务曾重启，原后台回测已中断，请重新创建回测"
+                )
+                conn.execute(
+                    "UPDATE backtest_run SET status=?,current_stage=?,finished_at=?,"
+                    "error_message=? WHERE id=?",
+                    (status, stage, now, None if cancelled else message, row["id"]),
+                )
+                conn.execute(
+                    "INSERT INTO backtest_log(backtest_run_id,level,message,created_at) "
+                    "VALUES (?,?,?,?)",
+                    (row["id"], "WARNING", message, now),
+                )
 
     def create_run(
         self,
@@ -58,43 +95,140 @@ class BacktestService:
         with self.app_db.transaction() as conn:
             cursor = conn.execute(
                 "INSERT INTO backtest_run(strategy_name,rule_version_id,start_date,end_date,initial_cash,"
-                "fee_json,status,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                "fee_json,status,created_at,current_stage) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     strategy_name, rule_id, start_date, end_date, initial_cash,
-                    json.dumps(fee), RunStatus.PENDING.value, utc_now(),
+                    json.dumps(fee), RunStatus.PENDING.value, utc_now(), "等待执行",
                 ),
             )
-            return int(cursor.lastrowid)
+            run_id = int(cursor.lastrowid)
+            conn.execute(
+                "INSERT INTO backtest_log(backtest_run_id,level,message,created_at) VALUES (?,?,?,?)",
+                (run_id, "INFO", "回测任务已创建，等待后台执行", utc_now()),
+            )
+            return run_id
+
+    def request_cancel(self, run_id: int, actor: str) -> dict[str, Any]:
+        """请求协作式中止；等待中的任务立即取消，运行中的任务在检查点退出。"""
+        now = utc_now()
+        with self.app_db.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM backtest_run WHERE id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise BacktestCancellationError("回测任务不存在")
+            if row["status"] == "PENDING":
+                conn.execute(
+                    "UPDATE backtest_run SET status='CANCELLED',finished_at=?,current_stage='已取消',"
+                    "cancel_requested=1,cancel_requested_at=?,cancel_requested_by=? WHERE id=?",
+                    (now, now, actor, run_id),
+                )
+                message = f"{actor} 已取消等待中的回测任务"
+            elif row["status"] == "RUNNING":
+                if row["cancel_requested"]:
+                    raise BacktestCancellationError("回测任务正在中止，请稍候")
+                conn.execute(
+                    "UPDATE backtest_run SET cancel_requested=1,cancel_requested_at=?,"
+                    "cancel_requested_by=?,current_stage='正在中止' WHERE id=?",
+                    (now, actor, run_id),
+                )
+                message = f"{actor} 请求中止回测，任务将在下一个安全检查点退出"
+            else:
+                raise BacktestCancellationError("当前状态的回测任务不能中止")
+            conn.execute(
+                "INSERT INTO backtest_log(backtest_run_id,level,message,created_at) VALUES (?,?,?,?)",
+                (run_id, "WARNING", message, now),
+            )
+            return dict(
+                conn.execute("SELECT * FROM backtest_run WHERE id=?", (run_id,)).fetchone()
+            )
+
+    def _log(self, run_id: int, message: str, level: str = "INFO") -> None:
+        with self.app_db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO backtest_log(backtest_run_id,level,message,created_at) VALUES (?,?,?,?)",
+                (run_id, level, message, utc_now()),
+            )
+
+    def _checkpoint(
+        self,
+        run_id: int,
+        stage: str,
+        progress_current: int | None = None,
+        progress_total: int | None = None,
+    ) -> None:
+        row = self.app_db.query_one(
+            "SELECT status,cancel_requested FROM backtest_run WHERE id=?", (run_id,)
+        )
+        if row is None or row["status"] == "CANCELLED" or row["cancel_requested"]:
+            raise BacktestCancelled("回测已由用户中止")
+        assignments = ["current_stage=?"]
+        values: list[Any] = [stage]
+        if progress_current is not None:
+            assignments.append("progress_current=?")
+            values.append(progress_current)
+        if progress_total is not None:
+            assignments.append("progress_total=?")
+            values.append(progress_total)
+        values.append(run_id)
+        with self.app_db.transaction() as conn:
+            conn.execute(
+                f"UPDATE backtest_run SET {','.join(assignments)} WHERE id=?", values
+            )
 
     def execute(self, run_id: int) -> None:
         run = self.app_db.query_one("SELECT * FROM backtest_run WHERE id=?", (run_id,))
         if run is None:
             raise ValueError("回测任务不存在")
         with self.app_db.transaction() as conn:
-            conn.execute("UPDATE backtest_run SET status='RUNNING' WHERE id=?", (run_id,))
+            cursor = conn.execute(
+                "UPDATE backtest_run SET status='RUNNING',started_at=?,current_stage='准备数据' "
+                "WHERE id=? AND status='PENDING' AND cancel_requested=0",
+                (utc_now(), run_id),
+            )
+            if cursor.rowcount == 0:
+                return
             conn.execute("DELETE FROM backtest_trade WHERE backtest_run_id=?", (run_id,))
             conn.execute("DELETE FROM backtest_equity WHERE backtest_run_id=?", (run_id,))
+        self._log(run_id, "回测开始执行")
+        run = self.app_db.query_one("SELECT * FROM backtest_run WHERE id=?", (run_id,))
         try:
             self._execute(run)
+        except BacktestCancelled:
+            with self.app_db.transaction() as conn:
+                conn.execute(
+                    "UPDATE backtest_run SET status='CANCELLED',finished_at=?,"
+                    "current_stage='已取消' WHERE id=?",
+                    (utc_now(), run_id),
+                )
+            self._log(run_id, "回测已在安全检查点停止，未写入未完成的结果", "WARNING")
         except Exception as exc:
             with self.app_db.transaction() as conn:
                 conn.execute(
-                    "UPDATE backtest_run SET status='FAILED',error_message=?,finished_at=? WHERE id=?",
+                    "UPDATE backtest_run SET status='FAILED',error_message=?,finished_at=?,"
+                    "current_stage='失败' WHERE id=?",
                     (str(exc), utc_now(), run_id),
                 )
-            raise
+            self._log(run_id, f"回测失败：{exc}", "ERROR")
 
     def _execute(self, run: dict[str, Any]) -> None:
+        run_id = int(run["id"])
         fee = json.loads(run["fee_json"])
         rule_row = self.app_db.query_one(
             "SELECT config_json FROM rule_version WHERE id=?", (run["rule_version_id"],)
         )
         rule = RuleConfig.from_dict(json.loads(rule_row["config_json"])) if rule_row else RuleConfig()
+        self._checkpoint(run_id, "加载历史行情")
+        self._log(run_id, "正在加载回测区间及指标预热所需的历史行情")
         data = self._load_data(run["start_date"], run["end_date"])
         if data.empty:
             raise ValueError("回测区间没有行情数据")
+        self._checkpoint(run_id, "计算策略信号")
+        self._log(run_id, f"历史行情加载完成，共 {len(data)} 条，开始计算策略信号")
         signals = self._strategy_signals(data, run["strategy_name"])
         signals = signals[(signals["date"] >= run["start_date"]) & (signals["date"] <= run["end_date"])]
+        self._checkpoint(run_id, "构建交易日历")
+        self._log(run_id, f"策略信号计算完成，共发现 {len(signals)} 条原始信号")
 
         frames = {
             symbol: frame.sort_values("date").reset_index(drop=True)
@@ -106,6 +240,8 @@ class BacktestService:
             if run["start_date"] <= row.date <= run["end_date"]
         }
         trade_dates = sorted({row.date for row in data.itertuples(index=False) if run["start_date"] <= row.date <= run["end_date"]})
+        self._checkpoint(run_id, "模拟交易", 0, len(trade_dates))
+        self._log(run_id, f"开始逐日模拟，共 {len(trade_dates)} 个交易日")
         next_date = {trade_dates[i]: trade_dates[i + 1] for i in range(len(trade_dates) - 1)}
         pending: dict[str, list[dict[str, Any]]] = {}
         open_positions: dict[str, OpenPosition] = {}
@@ -114,7 +250,15 @@ class BacktestService:
         trades: list[dict[str, Any]] = []
 
         signal_by_date = {date: group for date, group in signals.groupby("date")}
-        for trade_date in trade_dates:
+        log_interval = max(1, len(trade_dates) // 10)
+        for day_index, trade_date in enumerate(trade_dates, start=1):
+            if day_index == 1 or day_index % 5 == 0 or day_index == len(trade_dates):
+                self._checkpoint(run_id, "模拟交易", day_index, len(trade_dates))
+            if day_index % log_interval == 0 or day_index == len(trade_dates):
+                self._log(
+                    run_id,
+                    f"模拟进度 {day_index}/{len(trade_dates)}，当前交易日 {trade_date}",
+                )
             # 先处理止损/到期退出，禁止用当日收盘后信号影响当日成交。
             for symbol, position in list(open_positions.items()):
                 bar = row_lookup.get((symbol, trade_date))
@@ -244,7 +388,10 @@ class BacktestService:
             if equity_curve:
                 equity_curve[-1] = (last_date, cash)
 
+        self._checkpoint(run_id, "计算绩效", len(trade_dates), len(trade_dates))
+        self._log(run_id, f"交易模拟完成，共生成 {len(trades)} 笔交易，正在计算绩效")
         metrics = self._metrics(float(run["initial_cash"]), equity_curve, trades)
+        self._checkpoint(run_id, "加载基准", len(trade_dates), len(trade_dates))
         benchmark = self._benchmark_series(
             run["start_date"], run["end_date"], float(run["initial_cash"])
         )
@@ -252,7 +399,13 @@ class BacktestService:
             first = next(iter(benchmark.values()))
             last = list(benchmark.values())[-1]
             metrics["benchmark_return"] = last / first - 1 if first else None
+        self._checkpoint(run_id, "保存结果", len(trade_dates), len(trade_dates))
         with self.app_db.transaction() as conn:
+            state = conn.execute(
+                "SELECT cancel_requested FROM backtest_run WHERE id=?", (run_id,)
+            ).fetchone()
+            if state is None or state["cancel_requested"]:
+                raise BacktestCancelled("回测已由用户中止")
             for trade in trades:
                 conn.execute(
                     "INSERT INTO backtest_trade(backtest_run_id,symbol,signal_date,entry_date,entry_price,"
@@ -266,9 +419,14 @@ class BacktestService:
                     (run["id"], date_value, equity, benchmark.get(date_value)),
                 )
             conn.execute(
-                "UPDATE backtest_run SET status='SUCCEEDED',metrics_json=?,finished_at=? WHERE id=?",
-                (json.dumps(metrics, ensure_ascii=False), utc_now(), run["id"]),
+                "UPDATE backtest_run SET status='SUCCEEDED',metrics_json=?,finished_at=?,"
+                "current_stage='完成',progress_current=?,progress_total=? WHERE id=?",
+                (
+                    json.dumps(metrics, ensure_ascii=False), utc_now(), len(trade_dates),
+                    len(trade_dates), run_id,
+                ),
             )
+        self._log(run_id, "回测成功完成，交易明细和权益曲线已保存")
 
     def _load_data(self, start_date: str, end_date: str) -> pd.DataFrame:
         with sqlite3.connect(self.engine.db_path) as conn:

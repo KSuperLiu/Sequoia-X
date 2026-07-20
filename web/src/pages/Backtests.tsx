@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, Download, Plus } from "lucide-react";
+import { ArrowLeft, ArrowRight, Download, Plus, ScrollText, Square } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, money, pct } from "../api";
 import { useAuth } from "../auth";
@@ -9,13 +9,229 @@ import { useToast } from "../components/Toast";
 import { StrategyHelpButton } from "../components/StrategyGuide";
 import { BACKTEST_STRATEGIES, strategyMeta } from "../strategies";
 
-type Metrics = { trade_count: number; total_return: number; annualized_return: number; max_drawdown: number; win_rate: number; sharpe: number; payoff_ratio?: number; profit_factor?: number; benchmark_return?: number; warning: string };
-type Backtest = { id: number; strategy_name: string; start_date: string; end_date: string; initial_cash: number; status: string; metrics?: Metrics; error_message?: string; fee_json?: string; trades?: Array<{ id: number; symbol: string; signal_date: string; entry_date: string; entry_price: number; quantity: number; stop_price: number; exit_date: string; exit_price: number; exit_reason: string; fees: number; pnl: number; return_pct: number }>; equity?: Array<{ date: string; equity: number; benchmark?: number }> };
+type Metrics = {
+  trade_count: number;
+  total_return: number;
+  annualized_return: number;
+  max_drawdown: number;
+  win_rate: number;
+  sharpe: number;
+  payoff_ratio?: number;
+  profit_factor?: number;
+  benchmark_return?: number;
+  warning: string;
+};
 
-export default function Backtests() { const { runId } = useParams(); return runId ? <BacktestDetail id={+runId} /> : <BacktestList />; }
+type BacktestLog = { id: number; level: string; message: string; created_at: string };
+type Backtest = {
+  id: number;
+  strategy_name: string;
+  start_date: string;
+  end_date: string;
+  initial_cash: number;
+  status: string;
+  current_stage?: string;
+  progress_current: number;
+  progress_total: number;
+  cancel_requested?: number;
+  metrics?: Metrics;
+  error_message?: string;
+  fee_json?: string;
+  logs?: BacktestLog[];
+  trades?: Array<{
+    id: number;
+    symbol: string;
+    signal_date: string;
+    entry_date: string;
+    entry_price: number;
+    quantity: number;
+    stop_price: number;
+    exit_date: string;
+    exit_price: number;
+    exit_reason: string;
+    fees: number;
+    pnl: number;
+    return_pct: number;
+  }>;
+  equity?: Array<{ date: string; equity: number; benchmark?: number }>;
+};
 
-function BacktestList() { const user = useAuth(); const [rows, setRows] = useState<Backtest[]>([]); const [show, setShow] = useState(false); const navigate = useNavigate(); const load = () => api<Backtest[]>("/backtests").then(setRows); useEffect(() => { load(); const id = setInterval(load, 5000); return () => clearInterval(id); }, []); return <><PageHeader title="回测研究" subtitle="次日成交、风险仓位、止损和20日退出，与实时策略共用计算逻辑" actions={user ? <button className="primary icon-button" onClick={() => setShow(true)}><Plus size={15} />新建回测</button> : undefined} />{rows.length === 0 ? <Empty>还没有回测记录。</Empty> : <div className="backtest-list">{rows.map((row) => <button className="panel backtest-card" key={row.id} onClick={() => navigate(`/backtests/${row.id}`)}><div className="panel-title"><div><span className="eyebrow">{strategyMeta(row.strategy_name).name}<small>{row.strategy_name}</small></span><h2>{row.start_date} → {row.end_date}</h2></div><StatusBadge status={row.status} /></div>{row.metrics ? <><div className="metric-row"><div><span>总收益</span><b className={row.metrics.total_return >= 0 ? "positive" : "negative"}>{pct(row.metrics.total_return)}</b></div><div><span>年化</span><b>{pct(row.metrics.annualized_return)}</b></div><div><span>最大回撤</span><b className="negative">{pct(row.metrics.max_drawdown)}</b></div><div><span>胜率</span><b>{pct(row.metrics.win_rate)}</b></div><div><span>夏普</span><b>{row.metrics.sharpe?.toFixed(2)}</b></div><div><span>交易数</span><b>{row.metrics.trade_count}</b></div></div></> : <div className={row.status === "FAILED" ? "error-box" : "skeleton"}>{row.error_message || "后台计算中…"}</div>}<ArrowRight className="card-arrow" size={18} /></button>)}</div>}{user && show && <Modal title="新建策略回测" onClose={() => setShow(false)} wide><BacktestForm onSaved={() => { setShow(false); load(); }} /></Modal>}</>; }
+const shownStatus = (row: Backtest) =>
+  row.status === "RUNNING" && row.cancel_requested ? "CANCELLING" : row.status;
 
-function BacktestDetail({ id }: { id: number }) { const [row, setRow] = useState<Backtest | null>(null); const navigate = useNavigate(); useEffect(() => { api<Backtest>(`/backtests/${id}`).then(setRow); }, [id]); if (!row) return <div className="skeleton">正在加载回测详情…</div>; return <><button className="back-link" onClick={() => navigate("/backtests")}><ArrowLeft size={15} />返回回测列表</button><PageHeader title={`${strategyMeta(row.strategy_name).name} 回测`} subtitle={`${row.strategy_name} · ${row.start_date} 至 ${row.end_date} · 初始资金 ¥ ${money(row.initial_cash)}`} actions={<><StrategyHelpButton strategyName={row.strategy_name} /><StatusBadge status={row.status} /><a className="secondary icon-button" href={`/api/v1/backtests/${id}/trades.csv`}><Download size={15} />导出交易</a></>} />{row.error_message && <div className="error-box">{row.error_message}</div>}{row.metrics && <><section className="metric-row large"><div><span>总收益</span><b className={row.metrics.total_return >= 0 ? "positive" : "negative"}>{pct(row.metrics.total_return)}</b></div><div><span>年化收益</span><b>{pct(row.metrics.annualized_return)}</b></div><div><span>最大回撤</span><b className="negative">{pct(row.metrics.max_drawdown)}</b></div><div><span>胜率</span><b>{pct(row.metrics.win_rate)}</b></div><div><span>盈亏比</span><b>{row.metrics.payoff_ratio?.toFixed(2) || "—"}</b></div><div><span>利润因子</span><b>{row.metrics.profit_factor?.toFixed(2) || "—"}</b></div><div><span>夏普率</span><b>{row.metrics.sharpe?.toFixed(2)}</b></div><div><span>交易数</span><b>{row.metrics.trade_count}</b></div></section><div className="warning-banner">{row.metrics.warning}</div></>}{row.equity?.length ? <section className="panel"><div className="panel-title"><div><h2>权益曲线与基准</h2><small>策略账户权益对比沪深 300</small></div></div><LineChart rows={row.equity} benchmark /></section> : null}<section className="table-panel"><div className="panel-title"><div><h2>交易明细</h2><small>次日开盘成交、日内止损和持有期退出</small></div></div>{!row.trades?.length ? <Empty>没有产生符合成交条件的交易。</Empty> : <div className="table-scroll"><table><thead><tr><th>标的</th><th>信号 / 买入</th><th>买入价 / 数量</th><th>止损</th><th>卖出日 / 价格</th><th>退出原因</th><th>费用</th><th>盈亏 / 收益</th></tr></thead><tbody>{row.trades.map((trade) => <tr key={trade.id}><td><b>{trade.symbol}</b></td><td>{trade.signal_date}<small>{trade.entry_date}</small></td><td>{money(trade.entry_price)}<small>{trade.quantity} 股</small></td><td>{money(trade.stop_price)}</td><td>{trade.exit_date}<small>{money(trade.exit_price)}</small></td><td>{trade.exit_reason}</td><td>{money(trade.fees)}</td><td className={trade.pnl >= 0 ? "positive" : "negative"}>¥ {money(trade.pnl)}<small>{pct(trade.return_pct)}</small></td></tr>)}</tbody></table></div>}</section></>; }
+const canCancel = (row: Backtest) =>
+  ["PENDING", "RUNNING"].includes(row.status) && !row.cancel_requested;
 
-function BacktestForm({ onSaved }: { onSaved: () => void }) { const toast = useToast(); const [form, setForm] = useState({ strategy_name: "TurtleTradeStrategy", start_date: "2025-01-01", end_date: new Date().toISOString().slice(0, 10), initial_cash: 1000000, commission_rate: 0.0003, minimum_commission: 5, stamp_duty_rate: 0.0005, transfer_fee_rate: 0.00001 }); const submit = async (event: FormEvent) => { event.preventDefault(); try { await api("/backtests", { method: "POST", body: JSON.stringify(form) }); toast.show("回测已提交到后台"); onSaved(); } catch (reason) { toast.show((reason as Error).message, "error"); } }; return <form className="stack-form" onSubmit={submit}><div className="form-row"><label>策略<select value={form.strategy_name} onChange={(e) => setForm({ ...form, strategy_name: e.target.value })}>{BACKTEST_STRATEGIES.map((strategy) => <option key={strategy.key} value={strategy.key}>{strategy.name} · {strategy.key}</option>)}</select></label><label>开始<input type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} /></label><label>结束<input type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} /></label><label>初始资金<input type="number" value={form.initial_cash} onChange={(e) => setForm({ ...form, initial_cash: +e.target.value })} /></label></div><StrategyHelpButton strategyName={form.strategy_name} /><div className="form-row"><label>佣金率<input type="number" step="0.00001" value={form.commission_rate} onChange={(e) => setForm({ ...form, commission_rate: +e.target.value })} /></label><label>最低佣金<input type="number" step="0.01" value={form.minimum_commission} onChange={(e) => setForm({ ...form, minimum_commission: +e.target.value })} /></label><label>印花税率<input type="number" step="0.00001" value={form.stamp_duty_rate} onChange={(e) => setForm({ ...form, stamp_duty_rate: +e.target.value })} /></label><label>过户费率<input type="number" step="0.00001" value={form.transfer_fee_rate} onChange={(e) => setForm({ ...form, transfer_fee_rate: +e.target.value })} /></label></div><div className="warning-banner">当前历史库只有现行股票池和当前市值快照，结果存在幸存者偏差及市值口径偏差。</div><button className="primary">提交后台回测</button></form>; }
+function Progress({ row }: { row: Backtest }) {
+  if (!["PENDING", "RUNNING"].includes(row.status)) return null;
+  const value = row.progress_total
+    ? Math.min(100, Math.round((row.progress_current / row.progress_total) * 100))
+    : 0;
+  return (
+    <div className="backtest-progress">
+      <div className="progress"><i style={{ width: `${value}%` }} /></div>
+      <small>{row.current_stage || "等待执行"}{row.progress_total ? ` · ${row.progress_current}/${row.progress_total}` : ""}</small>
+    </div>
+  );
+}
+
+export default function Backtests() {
+  const { runId } = useParams();
+  return runId ? <BacktestDetail id={+runId} /> : <BacktestList />;
+}
+
+function BacktestList() {
+  const user = useAuth();
+  const toast = useToast();
+  const [rows, setRows] = useState<Backtest[]>([]);
+  const [show, setShow] = useState(false);
+  const navigate = useNavigate();
+  const load = () => api<Backtest[]>("/backtests").then(setRows);
+
+  useEffect(() => {
+    void load();
+    const timer = setInterval(() => void load(), 3000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const cancel = async (row: Backtest) => {
+    if (!window.confirm(`确认中止回测任务 #${row.id}？`)) return;
+    try {
+      const result = await api<Backtest>(`/backtests/${row.id}/cancel`, { method: "POST" });
+      setRows((current) => current.map((item) => item.id === row.id ? { ...item, ...result } : item));
+      toast.show(result.status === "CANCELLED" ? "回测已取消" : "中止请求已提交");
+    } catch (error) {
+      toast.show((error as Error).message, "error");
+    }
+  };
+
+  return <>
+    <PageHeader
+      title="回测研究"
+      subtitle="次日成交、风险仓位、止损和20日退出，与实时策略共用计算逻辑"
+      actions={user ? <button className="primary icon-button" onClick={() => setShow(true)}><Plus size={15} />新建回测</button> : undefined}
+    />
+    {rows.length === 0 ? <Empty>还没有回测记录。</Empty> : <div className="backtest-list">
+      {rows.map((row) => <article className="panel backtest-card" key={row.id}>
+        <button className="backtest-card-main" onClick={() => navigate(`/backtests/${row.id}`)}>
+          <div className="panel-title">
+            <div><span className="eyebrow">{strategyMeta(row.strategy_name).name}<small>{row.strategy_name}</small></span><h2>{row.start_date} → {row.end_date}</h2></div>
+            <StatusBadge status={shownStatus(row)} />
+          </div>
+          <Progress row={row} />
+          {row.metrics ? <div className="metric-row">
+            <div><span>总收益</span><b className={row.metrics.total_return >= 0 ? "positive" : "negative"}>{pct(row.metrics.total_return)}</b></div>
+            <div><span>年化</span><b>{pct(row.metrics.annualized_return)}</b></div>
+            <div><span>最大回撤</span><b className="negative">{pct(row.metrics.max_drawdown)}</b></div>
+            <div><span>胜率</span><b>{pct(row.metrics.win_rate)}</b></div>
+            <div><span>夏普</span><b>{row.metrics.sharpe?.toFixed(2)}</b></div>
+            <div><span>交易数</span><b>{row.metrics.trade_count}</b></div>
+          </div> : !["PENDING", "RUNNING"].includes(row.status) && <div className={row.status === "FAILED" ? "error-box" : "muted"}>{row.error_message || "没有可用结果"}</div>}
+        </button>
+        <div className="backtest-card-actions">
+          <button className="secondary icon-button" onClick={() => navigate(`/backtests/${row.id}`)}><ScrollText size={14} />日志与详情</button>
+          {user && canCancel(row) && <button className="secondary icon-button danger-text" onClick={() => void cancel(row)}><Square size={14} />中止</button>}
+          <ArrowRight size={18} />
+        </div>
+      </article>)}
+    </div>}
+    {user && show && <Modal title="新建策略回测" onClose={() => setShow(false)} wide><BacktestForm onSaved={() => { setShow(false); void load(); }} /></Modal>}
+  </>;
+}
+
+function BacktestDetail({ id }: { id: number }) {
+  const user = useAuth();
+  const toast = useToast();
+  const [row, setRow] = useState<Backtest | null>(null);
+  const navigate = useNavigate();
+  const load = () => api<Backtest>(`/backtests/${id}`).then(setRow);
+
+  useEffect(() => {
+    void load();
+    const timer = setInterval(() => void load(), 2500);
+    return () => clearInterval(timer);
+  }, [id]);
+
+  const cancel = async () => {
+    if (!row || !window.confirm(`确认中止回测任务 #${row.id}？`)) return;
+    try {
+      const result = await api<Backtest>(`/backtests/${row.id}/cancel`, { method: "POST" });
+      setRow({ ...row, ...result });
+      toast.show(result.status === "CANCELLED" ? "回测已取消" : "中止请求已提交");
+      window.setTimeout(() => void load(), 500);
+    } catch (error) {
+      toast.show((error as Error).message, "error");
+    }
+  };
+
+  if (!row) return <div className="skeleton">正在加载回测详情…</div>;
+  return <>
+    <button className="back-link" onClick={() => navigate("/backtests")}><ArrowLeft size={15} />返回回测列表</button>
+    <PageHeader
+      title={`${strategyMeta(row.strategy_name).name} 回测`}
+      subtitle={`${row.strategy_name} · ${row.start_date} 至 ${row.end_date} · 初始资金 ¥ ${money(row.initial_cash)}`}
+      actions={<>
+        <StrategyHelpButton strategyName={row.strategy_name} />
+        <StatusBadge status={shownStatus(row)} />
+        {user && canCancel(row) && <button className="secondary icon-button danger-text" onClick={() => void cancel()}><Square size={15} />中止回测</button>}
+        <a className="secondary icon-button" href={`/api/v1/backtests/${id}/trades.csv`}><Download size={15} />导出交易</a>
+      </>}
+    />
+    <Progress row={row} />
+    {row.error_message && <div className="error-box">{row.error_message}</div>}
+    <section className="panel">
+      <div className="panel-title"><div><ScrollText size={17} /><h2>执行日志</h2><small>显示回测阶段、进度、中止和失败原因</small></div></div>
+      <pre className="log-view">{row.logs?.slice().reverse().map((log) => `[${new Date(log.created_at).toLocaleString("zh-CN")}] [${log.level}] ${log.message}`).join("\n") || "暂无日志"}</pre>
+    </section>
+    {row.metrics && <>
+      <section className="metric-row large">
+        <div><span>总收益</span><b className={row.metrics.total_return >= 0 ? "positive" : "negative"}>{pct(row.metrics.total_return)}</b></div>
+        <div><span>年化收益</span><b>{pct(row.metrics.annualized_return)}</b></div>
+        <div><span>最大回撤</span><b className="negative">{pct(row.metrics.max_drawdown)}</b></div>
+        <div><span>胜率</span><b>{pct(row.metrics.win_rate)}</b></div>
+        <div><span>盈亏比</span><b>{row.metrics.payoff_ratio?.toFixed(2) || "—"}</b></div>
+        <div><span>利润因子</span><b>{row.metrics.profit_factor?.toFixed(2) || "—"}</b></div>
+        <div><span>夏普率</span><b>{row.metrics.sharpe?.toFixed(2)}</b></div>
+        <div><span>交易数</span><b>{row.metrics.trade_count}</b></div>
+      </section>
+      <div className="warning-banner">{row.metrics.warning}</div>
+    </>}
+    {row.equity?.length ? <section className="panel"><div className="panel-title"><div><h2>权益曲线与基准</h2><small>策略账户权益对比沪深 300</small></div></div><LineChart rows={row.equity} benchmark /></section> : null}
+    <section className="table-panel">
+      <div className="panel-title"><div><h2>交易明细</h2><small>次日开盘成交、日内止损和持有期退出</small></div></div>
+      {!row.trades?.length ? <Empty>{["PENDING", "RUNNING"].includes(row.status) ? "回测尚未完成，交易明细将在完成后生成。" : "没有产生符合成交条件的交易。"}</Empty> : <div className="table-scroll"><table><thead><tr><th>标的</th><th>信号 / 买入</th><th>买入价 / 数量</th><th>止损</th><th>卖出日 / 价格</th><th>退出原因</th><th>费用</th><th>盈亏 / 收益</th></tr></thead><tbody>{row.trades.map((trade) => <tr key={trade.id}><td><b>{trade.symbol}</b></td><td>{trade.signal_date}<small>{trade.entry_date}</small></td><td>{money(trade.entry_price)}<small>{trade.quantity} 股</small></td><td>{money(trade.stop_price)}</td><td>{trade.exit_date}<small>{money(trade.exit_price)}</small></td><td>{trade.exit_reason}</td><td>{money(trade.fees)}</td><td className={trade.pnl >= 0 ? "positive" : "negative"}>¥ {money(trade.pnl)}<small>{pct(trade.return_pct)}</small></td></tr>)}</tbody></table></div>}
+    </section>
+  </>;
+}
+
+function BacktestForm({ onSaved }: { onSaved: () => void }) {
+  const toast = useToast();
+  const [form, setForm] = useState({ strategy_name: "TurtleTradeStrategy", start_date: "2025-01-01", end_date: new Date().toISOString().slice(0, 10), initial_cash: 1000000, commission_rate: 0.0003, minimum_commission: 5, stamp_duty_rate: 0.0005, transfer_fee_rate: 0.00001 });
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      await api("/backtests", { method: "POST", body: JSON.stringify(form) });
+      toast.show("回测已提交到后台");
+      onSaved();
+    } catch (reason) {
+      toast.show((reason as Error).message, "error");
+    }
+  };
+  return <form className="stack-form" onSubmit={submit}>
+    <div className="form-row">
+      <label>策略<select value={form.strategy_name} onChange={(e) => setForm({ ...form, strategy_name: e.target.value })}>{BACKTEST_STRATEGIES.map((strategy) => <option key={strategy.key} value={strategy.key}>{strategy.name} · {strategy.key}</option>)}</select></label>
+      <label>开始<input type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} /></label>
+      <label>结束<input type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} /></label>
+      <label>初始资金<input type="number" value={form.initial_cash} onChange={(e) => setForm({ ...form, initial_cash: +e.target.value })} /></label>
+    </div>
+    <StrategyHelpButton strategyName={form.strategy_name} />
+    <div className="form-row">
+      <label>佣金率<input type="number" step="0.00001" value={form.commission_rate} onChange={(e) => setForm({ ...form, commission_rate: +e.target.value })} /></label>
+      <label>最低佣金<input type="number" step="0.01" value={form.minimum_commission} onChange={(e) => setForm({ ...form, minimum_commission: +e.target.value })} /></label>
+      <label>印花税率<input type="number" step="0.00001" value={form.stamp_duty_rate} onChange={(e) => setForm({ ...form, stamp_duty_rate: +e.target.value })} /></label>
+      <label>过户费率<input type="number" step="0.00001" value={form.transfer_fee_rate} onChange={(e) => setForm({ ...form, transfer_fee_rate: +e.target.value })} /></label>
+    </div>
+    <div className="warning-banner">当前历史库只有现行股票池和当前市值快照，结果存在幸存者偏差及市值口径偏差。</div>
+    <button className="primary">提交后台回测</button>
+  </form>;
+}

@@ -95,6 +95,51 @@ def test_guest_can_read_business_data_but_not_admin_endpoints(tmp_path: Path) ->
     assert client.post("/api/v1/runs/trigger").status_code == 401
 
 
+def test_backtest_cancel_api_and_detail_logs(tmp_path: Path) -> None:
+    settings = Settings(
+        db_path=str(tmp_path / "market.db"),
+        app_db_path=str(tmp_path / "app.db"),
+        feishu_webhook_url="https://example.com/hook",
+        admin_username="admin",
+        admin_password="test-password-123",
+        cookie_secure=False,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "test-password-123"},
+    )
+    csrf = login.json()["csrf_token"]
+    run_id = app.state.backtest.create_run(
+        strategy_name="TurtleTradeStrategy",
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+        initial_cash=100_000,
+        fee={
+            "commission_rate": 0.0003,
+            "minimum_commission": 5,
+            "stamp_duty_rate": 0.0005,
+            "transfer_fee_rate": 0.00001,
+        },
+    )
+
+    assert client.post(f"/api/v1/backtests/{run_id}/cancel").status_code == 403
+    response = client.post(
+        f"/api/v1/backtests/{run_id}/cancel",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 202
+    assert response.json()["status"] == "CANCELLED"
+    detail = client.get(f"/api/v1/backtests/{run_id}").json()
+    assert detail["current_stage"] == "已取消"
+    assert len(detail["logs"]) == 2
+    assert client.post(
+        f"/api/v1/backtests/{run_id}/cancel",
+        headers={"X-CSRF-Token": csrf},
+    ).status_code == 409
+
+
 def test_member_registration_and_personal_account_isolation(tmp_path: Path) -> None:
     settings = Settings(
         db_path=str(tmp_path / "market.db"),

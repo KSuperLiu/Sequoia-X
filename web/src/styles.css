@@ -36,3 +36,10 @@
   .topbar-actions button span{max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .strategy-card-grid{grid-template-columns:1fr}.strategy-guide-note{margin-bottom:12px}
 }
+
+.backtest-card-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:14px}
+.backtest-card-actions>svg{color:#7890ae;margin-left:4px}
+.backtest-card-main{display:block;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:0}
+.backtest-progress{margin:0 0 14px}
+.backtest-progress .progress{margin:0 0 6px}
+.backtest-progress small{color:var(--muted)}
