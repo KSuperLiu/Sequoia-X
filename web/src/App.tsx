@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, BellRing, BriefcaseBusiness, ClipboardList, FlaskConical, LayoutDashboard, ListChecks, LogOut, Search, Settings, Star, UserRound } from "lucide-react";
+import { BarChart3, BellRing, BookOpenText, BriefcaseBusiness, ClipboardList, FlaskConical, LayoutDashboard, ListChecks, LogOut, Search, Settings, Star, UserRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api, setCsrfToken } from "./api";
 import { AuthContext, type User } from "./auth";
@@ -9,6 +9,7 @@ import Login from "./pages/Login";
 const Backtests = lazy(() => import("./pages/Backtests"));
 const Candidates = lazy(() => import("./pages/Candidates"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Journal = lazy(() => import("./pages/Journal"));
 const Plans = lazy(() => import("./pages/Plans"));
 const PortfolioPage = lazy(() => import("./pages/Portfolio"));
 const Reports = lazy(() => import("./pages/Reports"));
@@ -21,7 +22,7 @@ type StockHit = { symbol: string; name?: string; industry?: string; snapshot?: {
 const groups: Array<{ label: string; items: Array<[string, string, LucideIcon]> }> = [
   { label: "决策", items: [["/dashboard", "工作台", LayoutDashboard], ["/candidates", "机会中心", Star], ["/plans", "计划中心", ClipboardList]] },
   { label: "交易", items: [["/portfolio", "组合账户", BriefcaseBusiness]] },
-  { label: "研究", items: [["/reports", "复盘分析", BarChart3], ["/backtests", "回测研究", FlaskConical]] },
+  { label: "研究", items: [["/reports", "复盘分析", BarChart3], ["/journal", "复盘日记", BookOpenText], ["/backtests", "回测研究", FlaskConical]] },
   { label: "系统", items: [["/tasks", "任务中心", ListChecks], ["/settings", "系统管理", Settings]] },
 ];
 
@@ -60,6 +61,9 @@ function Shell({ user, onLogout }: { user: User | null; onLogout: () => Promise<
       <Route path="/portfolio" element={<PortfolioPage />} />
       <Route path="/reports" element={<Reports />} />
       <Route path="/reports/:reportId" element={<Reports />} />
+      <Route path="/journal" element={user ? <Journal /> : <Navigate to="/login" replace />} />
+      <Route path="/journal/new" element={user ? <Journal /> : <Navigate to="/login" replace />} />
+      <Route path="/journal/:journalId" element={user ? <Journal /> : <Navigate to="/login" replace />} />
       <Route path="/backtests" element={<Backtests />} />
       <Route path="/backtests/:runId" element={<Backtests />} />
       <Route path="/stocks/:symbol" element={<StockDetail />} />

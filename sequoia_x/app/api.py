@@ -7,6 +7,7 @@ import io
 import json
 import sqlite3
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
@@ -39,6 +40,7 @@ from sequoia_x.app.jobs import (
     latest_job,
     request_job_cancel,
 )
+from sequoia_x.app.journal import JournalError, JournalService
 from sequoia_x.app.ledger import LedgerError, LedgerService
 from sequoia_x.app.scoring import suggested_quantity
 from sequoia_x.core.config import Settings, get_settings
@@ -155,6 +157,22 @@ class PasswordInput(BaseModel):
     new_password: str = Field(min_length=10, max_length=200)
 
 
+class JournalInput(BaseModel):
+    review_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    title: str = Field(min_length=1, max_length=100)
+    status: Literal["DRAFT", "COMPLETED"] = "DRAFT"
+    market_phase: Literal["BULL", "REBOUND", "RANGE", "WEAK", "PANIC"] = "RANGE"
+    emotion: Literal["CALM", "CONFIDENT", "ANXIOUS", "IMPULSIVE", "FEARFUL"] = "CALM"
+    discipline_score: int = Field(default=3, ge=1, le=5)
+    market_observation: str = Field(default="", max_length=10_000)
+    trade_review: str = Field(default="", max_length=10_000)
+    mistakes: str = Field(default="", max_length=10_000)
+    lessons: str = Field(default="", max_length=10_000)
+    tomorrow_plan: str = Field(default="", max_length=10_000)
+    tags: list[str] = Field(default_factory=list, max_length=12)
+    related_symbols: list[str] = Field(default_factory=list, max_length=20)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     app_db = AppDatabase(settings.app_db_path)
@@ -168,7 +186,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Sequoia-X API",
-        version="2.2.3",
+        version="2.3.0",
         lifespan=lifespan,
         docs_url="/docs" if settings.enable_api_docs else None,
         redoc_url=None,
@@ -180,6 +198,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.auth = auth
     app.state.ledger = LedgerService(app_db)
     app.state.backtest = BacktestService(app_db, engine)
+    app.state.journal = JournalService(app_db)
 
     def account_for_user(account_id: int, user: dict[str, Any]) -> dict[str, Any]:
         account = app_db.query_one("SELECT * FROM account WHERE id=?", (account_id,))
@@ -957,6 +976,108 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for row in app.state.ledger.list_cash_events(account_id):
                 writer.writerow([row["trade_date"], row["event_type"], row["amount"], row.get("note"), "是" if row.get("reversal_id") else "否"])
         return Response(output.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f"attachment; filename=account-{account_id}-{kind}.csv"})
+
+    def validate_journal_date(value: str) -> None:
+        try:
+            date.fromisoformat(value)
+        except ValueError as exc:
+            raise HTTPException(422, "复盘日期格式不正确") from exc
+
+    @app.get("/api/v1/journal")
+    def journal_entries(
+        q: str = "",
+        status: Literal["DRAFT", "COMPLETED"] | None = None,
+        tag: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=50),
+        user: dict[str, Any] = Depends(require_user),
+    ) -> dict[str, Any]:
+        if start_date:
+            validate_journal_date(start_date)
+        if end_date:
+            validate_journal_date(end_date)
+        return app.state.journal.list_entries(
+            int(user["user_id"]),
+            query=q,
+            status=status or "",
+            tag=tag,
+            start_date=start_date,
+            end_date=end_date,
+            page=page,
+            page_size=page_size,
+        )
+
+    @app.post("/api/v1/journal", status_code=201)
+    def create_journal_entry(
+        payload: JournalInput,
+        user: dict[str, Any] = Depends(require_csrf),
+    ) -> dict[str, int]:
+        validate_journal_date(payload.review_date)
+        try:
+            entry_id = app.state.journal.create(
+                int(user["user_id"]), payload.model_dump()
+            )
+        except JournalError as exc:
+            raise HTTPException(409 if "已经有" in str(exc) else 422, str(exc)) from exc
+        app_db.audit(
+            user["username"], "CREATE_REVIEW_JOURNAL", "personal_review_journal",
+            entry_id, {"review_date": payload.review_date, "status": payload.status},
+        )
+        return {"id": entry_id}
+
+    @app.get("/api/v1/journal/context/{review_date}")
+    def journal_context(
+        review_date: str,
+        user: dict[str, Any] = Depends(require_user),
+    ) -> dict[str, Any]:
+        validate_journal_date(review_date)
+        return app.state.journal.context(int(user["user_id"]), review_date)
+
+    @app.get("/api/v1/journal/{entry_id}")
+    def journal_detail(
+        entry_id: int,
+        user: dict[str, Any] = Depends(require_user),
+    ) -> dict[str, Any]:
+        try:
+            return app.state.journal.get(entry_id, int(user["user_id"]))
+        except JournalError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.put("/api/v1/journal/{entry_id}")
+    def update_journal_entry(
+        entry_id: int,
+        payload: JournalInput,
+        user: dict[str, Any] = Depends(require_csrf),
+    ) -> dict[str, bool]:
+        validate_journal_date(payload.review_date)
+        try:
+            app.state.journal.update(
+                entry_id, int(user["user_id"]), payload.model_dump()
+            )
+        except JournalError as exc:
+            status_code = 404 if "不存在" in str(exc) else 409 if "已经有" in str(exc) else 422
+            raise HTTPException(status_code, str(exc)) from exc
+        app_db.audit(
+            user["username"], "UPDATE_REVIEW_JOURNAL", "personal_review_journal",
+            entry_id, {"review_date": payload.review_date, "status": payload.status},
+        )
+        return {"ok": True}
+
+    @app.delete("/api/v1/journal/{entry_id}", status_code=204)
+    def delete_journal_entry(
+        entry_id: int,
+        user: dict[str, Any] = Depends(require_csrf),
+    ) -> Response:
+        try:
+            app.state.journal.delete(entry_id, int(user["user_id"]))
+        except JournalError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        app_db.audit(
+            user["username"], "DELETE_REVIEW_JOURNAL", "personal_review_journal", entry_id
+        )
+        return Response(status_code=204)
 
     @app.get("/api/v1/reports")
     def reports() -> list[dict[str, Any]]:

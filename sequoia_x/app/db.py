@@ -399,6 +399,29 @@ CREATE TABLE IF NOT EXISTS job_log (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_job_log_run_id ON job_log(job_run_id, id);
+
+CREATE TABLE IF NOT EXISTS personal_review_journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id INTEGER NOT NULL REFERENCES admin_user(id) ON DELETE CASCADE,
+    review_date TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'DRAFT',
+    market_phase TEXT NOT NULL DEFAULT 'RANGE',
+    emotion TEXT NOT NULL DEFAULT 'CALM',
+    discipline_score INTEGER NOT NULL DEFAULT 3 CHECK(discipline_score BETWEEN 1 AND 5),
+    market_observation TEXT NOT NULL DEFAULT '',
+    trade_review TEXT NOT NULL DEFAULT '',
+    mistakes TEXT NOT NULL DEFAULT '',
+    lessons TEXT NOT NULL DEFAULT '',
+    tomorrow_plan TEXT NOT NULL DEFAULT '',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    related_symbols_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(owner_user_id, review_date)
+);
+CREATE INDEX IF NOT EXISTS idx_review_journal_owner_date
+ON personal_review_journal(owner_user_id, review_date DESC);
 """
 
 
@@ -554,6 +577,10 @@ class AppDatabase:
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migration(version,name,applied_at) VALUES (4,?,?)",
                 ("backtest_observability", utc_now()),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migration(version,name,applied_at) VALUES (5,?,?)",
+                ("personal_review_journal", utc_now()),
             )
             conn.commit()
         self.ensure_default_rule()

@@ -8,6 +8,7 @@ test.beforeEach(async ({ page }) => {
       "/api/v1/auth/me": { username: "admin", role: "ADMIN", csrf_token: "test-csrf" },
       "/api/v1/dashboard": { run: null, summary: null, accounts: [], data_stale: true, top_candidates: [], risk_alerts: [], recent_activity: [], latest_job: null, ready_plan_count: 0 },
       "/api/v1/accounts": [], "/api/v1/watchlist": [], "/api/v1/plans": emptyPage,
+      "/api/v1/journal": { ...emptyPage, page_size: 12, stats: { total: 0, completed: 0, current_month: 0, avg_discipline: 0 }, tags: [] },
       "/api/v1/reports": [], "/api/v1/backtests": [], "/api/v1/jobs": [],
       "/api/v1/rules": [], "/api/v1/audit-logs": [], "/api/v1/backups": [],
       "/api/v1/settings": { daily_run_time: "18:30", min_market_cap: 5_000_000_000, public_base_url: "", supported_strategies: [] },
@@ -26,11 +27,48 @@ test("核心工作台导航均可进入真实页面", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "核心决策工作台" })).toBeVisible();
   for (const [link, heading] of [
     ["机会中心", "机会中心"], ["计划中心", "交易计划中心"], ["组合账户", "组合账户"],
-    ["复盘分析", "复盘分析"], ["回测研究", "回测研究"], ["任务中心", "任务中心"], ["系统管理", "系统管理"],
+    ["复盘分析", "复盘分析"], ["复盘日记", "个人复盘日记"], ["回测研究", "回测研究"], ["任务中心", "任务中心"], ["系统管理", "系统管理"],
   ]) {
     await page.getByRole("link", { name: link }).click();
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
   }
+});
+
+test("个人复盘日记可使用模板并保存完成状态", async ({ page }) => {
+  let saved: Record<string, unknown> | null = null;
+  const context = {
+    report: { id: 3, title: "7 月 22 日系统日报", summary: { action: "控制仓位，等待左侧机会" } },
+    candidate: { count: 12, avg_score: 5.8, left_count: 2, middle_count: 3, right_count: 6, veto_count: 1 },
+    fills: [], snapshots: [],
+  };
+  await page.route("**/api/v1/journal**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/journal/context/2026-07-22") return route.fulfill({ json: context });
+    if (path === "/api/v1/journal" && request.method() === "POST") {
+      saved = request.postDataJSON();
+      return route.fulfill({ status: 201, json: { id: 9 } });
+    }
+    if (path === "/api/v1/journal/9") return route.fulfill({ json: { id: 9, ...(saved || {}), created_at: "2026-07-22T10:00:00Z", updated_at: "2026-07-22T10:00:00Z", context } });
+    return route.fallback();
+  });
+
+  await page.goto("/journal/new");
+  await expect(page.getByRole("heading", { name: "新建个人复盘" })).toBeVisible();
+  await expect(page.getByText("候选").first()).toBeVisible();
+  await page.getByRole("button", { name: "使用模板" }).click();
+  await expect(page.getByLabel("市场观察")).toContainText("指数与成交量");
+  await page.getByLabel("标题").fill("今日只做计划内交易");
+  await page.getByText("纪律执行评分").locator("..").getByRole("button", { name: "5" }).click();
+  await page.getByLabel("标签").fill("纪律, 震荡");
+  await page.getByLabel("关联股票").fill("600519 000001");
+  await page.getByRole("button", { name: "完成复盘" }).click();
+
+  await expect(page).toHaveURL(/\/journal\/9$/);
+  await expect(page.getByText("复盘已完成")).toBeVisible();
+  expect(saved?.status).toBe("COMPLETED");
+  expect(saved?.discipline_score).toBe(5);
+  expect(saved?.related_symbols).toEqual(["600519", "000001"]);
 });
 
 test("游客可浏览数据且看不到管理员功能", async ({ page }) => {
