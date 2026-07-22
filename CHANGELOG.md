@@ -21,6 +21,15 @@
 - 新增复盘日记迁移、创建、同日唯一约束、检索筛选、更新删除、CSRF 和跨账号越权测试。
 - 新增复盘导航、模板填充、纪律评分、标签与关联股票保存的 Playwright 页面测试。
 
+### 发布信息
+
+- 目标环境：生产服务器 `/opt/sequoia-x`，公网入口 `http://172.93.187.65/`。
+- 发布路径：功能分支 `codex/personal-review-journal` 的提交 `4943228` 通过 PR #8 合并至生产分支 `codex/sequoia-trading-tracker`，生产部署提交为 `f5cc06309a58bb80e07c7bf639f4df53be77c0e1`。
+- 部署前一致性备份：`sequoia_app_predeploy_20260722_220501.db`、`sequoia_v2_predeploy_20260722_220501.db`。
+- 数据库迁移：成功应用版本 5 `personal_review_journal`，历史行情库及已有业务数据保持不变。
+- 部署验收：API、Worker、Web 容器均正常运行，应用包版本为 2.3.0，公网首页、健康检查与 `/journal` 返回 HTTP 200，未登录访问个人复盘 API 返回 HTTP 401，公网资源已包含个人复盘日记页面。
+- 运行状态：行情最新日期为 `2026-07-22`，最近任务保持 `SUCCEEDED`，部署后日志未发现 traceback、ERROR、FAILED 或 OOM。
+
 ## 2.2.3 - 2026-07-20
 
 ### 新增
