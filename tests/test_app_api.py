@@ -197,6 +197,93 @@ def test_member_registration_and_personal_account_isolation(tmp_path: Path) -> N
     assert duplicate.status_code == 409
 
 
+def test_personal_review_journal_crud_csrf_and_owner_isolation(tmp_path: Path) -> None:
+    settings = Settings(
+        db_path=str(tmp_path / "market.db"),
+        app_db_path=str(tmp_path / "app.db"),
+        feishu_webhook_url="https://example.com/hook",
+        admin_username="admin",
+        admin_password="test-password-123",
+        cookie_secure=False,
+    )
+    app = create_app(settings)
+    guest = TestClient(app)
+    assert guest.get("/api/v1/journal").status_code == 401
+
+    alice = TestClient(app)
+    alice_registered = alice.post(
+        "/api/v1/auth/register",
+        json={"username": "journal_alice", "password": "alice-password"},
+    )
+    alice_headers = {"X-CSRF-Token": alice_registered.json()["csrf_token"]}
+    payload = {
+        "review_date": "2026-07-22",
+        "title": "震荡日的纪律复盘",
+        "status": "DRAFT",
+        "market_phase": "RANGE",
+        "emotion": "CALM",
+        "discipline_score": 4,
+        "market_observation": "缩量震荡，等待主线确认。",
+        "trade_review": "按计划没有追高。",
+        "mistakes": "观察标的过多。",
+        "lessons": "没有触发条件就不交易。",
+        "tomorrow_plan": "只观察两只核心标的。",
+        "tags": ["纪律", "震荡", "纪律"],
+        "related_symbols": ["600519", "000001"],
+    }
+    assert alice.post("/api/v1/journal", json=payload).status_code == 403
+    created = alice.post("/api/v1/journal", json=payload, headers=alice_headers)
+    assert created.status_code == 201
+    entry_id = created.json()["id"]
+
+    detail = alice.get(f"/api/v1/journal/{entry_id}")
+    assert detail.status_code == 200
+    assert detail.json()["tags"] == ["纪律", "震荡"]
+    assert detail.json()["context"]["candidate"]["count"] == 0
+    assert alice.get("/api/v1/journal/context/not-a-date").status_code == 422
+    duplicate = alice.post("/api/v1/journal", json=payload, headers=alice_headers)
+    assert duplicate.status_code == 409
+
+    bob = TestClient(app)
+    bob_registered = bob.post(
+        "/api/v1/auth/register",
+        json={"username": "journal_bob", "password": "bob-password"},
+    )
+    bob_headers = {"X-CSRF-Token": bob_registered.json()["csrf_token"]}
+    assert bob.get("/api/v1/journal").json()["total"] == 0
+    assert bob.get(f"/api/v1/journal/{entry_id}").status_code == 404
+    assert bob.put(
+        f"/api/v1/journal/{entry_id}", json=payload, headers=bob_headers
+    ).status_code == 404
+    assert bob.delete(
+        f"/api/v1/journal/{entry_id}", headers=bob_headers
+    ).status_code == 404
+
+    completed_payload = {
+        **payload,
+        "status": "COMPLETED",
+        "discipline_score": 5,
+        "lessons": "只在计划内交易，继续保持。",
+    }
+    updated = alice.put(
+        f"/api/v1/journal/{entry_id}", json=completed_payload, headers=alice_headers
+    )
+    assert updated.status_code == 200
+    listing = alice.get("/api/v1/journal?status=COMPLETED&tag=纪律&q=计划").json()
+    assert listing["total"] == 1
+    assert listing["stats"]["completed"] == 1
+    assert listing["items"][0]["discipline_score"] == 5
+    assert app.state.journal.db.query_one(
+        "SELECT version FROM schema_migration WHERE version=5"
+    ) == {"version": 5}
+
+    assert alice.delete(f"/api/v1/journal/{entry_id}").status_code == 403
+    assert alice.delete(
+        f"/api/v1/journal/{entry_id}", headers=alice_headers
+    ).status_code == 204
+    assert alice.get(f"/api/v1/journal/{entry_id}").status_code == 404
+
+
 def test_watchlist_jobs_and_system_endpoints(tmp_path: Path) -> None:
     market_db = tmp_path / "market.db"
     with sqlite3.connect(market_db) as conn:
