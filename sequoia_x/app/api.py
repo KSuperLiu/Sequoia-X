@@ -186,7 +186,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Sequoia-X API",
-        version="2.3.0",
+        version="2.3.1",
         lifespan=lifespan,
         docs_url="/docs" if settings.enable_api_docs else None,
         redoc_url=None,
@@ -199,6 +199,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.ledger = LedgerService(app_db)
     app.state.backtest = BacktestService(app_db, engine)
     app.state.journal = JournalService(app_db)
+
+    def enrich_market_caps(rows: list[dict[str, Any]]) -> None:
+        symbols = list({str(row["symbol"]) for row in rows if row.get("symbol")})
+        if not symbols:
+            return
+        market_caps: dict[str, float] = {}
+        try:
+            with sqlite3.connect(settings.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                placeholders = ",".join("?" for _ in symbols)
+                market_caps = {
+                    str(item["symbol"]): float(item["market_cap"])
+                    for item in conn.execute(
+                        f"SELECT symbol,market_cap FROM stock_market_cap "
+                        f"WHERE symbol IN ({placeholders})",
+                        symbols,
+                    ).fetchall()
+                    if item["market_cap"] is not None
+                }
+        except sqlite3.Error:
+            pass
+        for row in rows:
+            row["market_cap"] = market_caps.get(str(row.get("symbol")))
 
     def account_for_user(account_id: int, user: dict[str, Any]) -> dict[str, Any]:
         account = app_db.query_one("SELECT * FROM account WHERE id=?", (account_id,))
@@ -350,6 +373,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         for row in rows:
             row["strategies"] = json.loads(row.pop("strategies_json"))
+        enrich_market_caps(rows)
         if account_id is not None:
             if user is None:
                 raise HTTPException(401, "登录后才可按组合计算仓位")
@@ -469,6 +493,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     entry_price=entry, stop_price=row.get("current_stop_price"),
                     zone=PositionZone(row["current_zone"]), rule=active_rule,
                 ) if row["data_fresh"] else 0
+        enrich_market_caps(rows)
         facet_rows = app_db.query_all(
             "SELECT p.current_zone zone,COUNT(*) count FROM candidate c JOIN trade_plan p ON p.candidate_id=c.id "
             "WHERE c.trade_date=? GROUP BY p.current_zone", (trade_date,),
@@ -488,9 +513,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result = candidate_search(trade_date=trade_date, zone=zone, min_score=min_score, page=1, page_size=100)
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["日期", "代码", "名称", "行业", "分数", "共振数", "位置", "现价", "买入下沿", "买入上沿", "止损", "状态"])
+        writer.writerow(["日期", "代码", "名称", "行业", "总市值", "分数", "共振数", "位置", "现价", "买入下沿", "买入上沿", "止损", "状态"])
         for row in result["items"]:
-            writer.writerow([row["trade_date"], row["symbol"], row.get("name"), row.get("industry"), row["total_score"], row["consensus_count"], row["current_zone"], row.get("real_close"), row.get("current_entry_low"), row.get("current_entry_high"), row.get("current_stop_price"), row["lifecycle_status"]])
+            writer.writerow([row["trade_date"], row["symbol"], row.get("name"), row.get("industry"), row.get("market_cap"), row["total_score"], row["consensus_count"], row["current_zone"], row.get("real_close"), row.get("current_entry_low"), row.get("current_entry_high"), row.get("current_stop_price"), row["lifecycle_status"]])
         return Response(output.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=candidates.csv"})
 
     @app.get("/api/v1/candidates/{candidate_id}")

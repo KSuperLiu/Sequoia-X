@@ -22,6 +22,7 @@ export interface Candidate {
   symbol: string;
   name?: string;
   industry?: string;
+  market_cap?: number;
   trade_date: string;
   strategies: string[];
   consensus_count: number;

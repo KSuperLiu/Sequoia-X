@@ -12,6 +12,10 @@ export function Kpi({ label, value, tone = "navy", note, onClick }: { label: str
 
 export function Empty({ children }: { children: ReactNode }) { return <div className="empty"><Inbox size={30} /><p>{children}</p></div>; }
 
+export function confidenceLabel(confidence: string) {
+  return ({ HIGH: "高", MEDIUM: "中", LOW: "低" } as Record<string, string>)[confidence] || confidence;
+}
+
 export function ZoneBadge({ zone }: { zone: string }) {
   const labels: Record<string, string> = { LEFT: "左侧", MIDDLE: "中部", RIGHT: "右侧", VETO: "否决" };
   return <span className={`zone ${zone.toLowerCase()}`}><i />{labels[zone] || zone}</span>;
