@@ -36,6 +36,8 @@ test("K 线止损标签显示完整价格和距最新价百分比", async ({ pag
   const chart = page.getByRole("img", { name: "股票K线图，止损 18.70 · 距最新价 -3.8%" });
   await expect(chart).toBeVisible();
   await expect(chart).toHaveAttribute("aria-label", "股票K线图，止损 18.70 · 距最新价 -3.8%");
+  const stopLabel = page.locator(".stock-chart-stop-label");
+  await expect(stopLabel).toHaveCount(0);
   const chartBox = await chart.boundingBox();
   expect(chartBox).not.toBeNull();
   await page.mouse.move((chartBox?.x || 0) + (chartBox?.width || 0) / 2, (chartBox?.y || 0) + 120);
@@ -45,4 +47,15 @@ test("K 线止损标签显示完整价格和距最新价百分比", async ({ pag
   for (const label of ["open", "close", "lowest", "highest"]) {
     await expect(page.getByText(label, { exact: true })).toHaveCount(0);
   }
+  await page.mouse.move((chartBox?.x || 0) + (chartBox?.width || 0) - 100, (chartBox?.y || 0) + 238);
+  await expect(stopLabel).toHaveText("止损 18.70 · 距最新价 -3.8%");
+  await page.mouse.move((chartBox?.x || 0) + 100, (chartBox?.y || 0) + 60);
+  await expect(stopLabel).toHaveCount(0);
+  await page.mouse.click((chartBox?.x || 0) + (chartBox?.width || 0) - 100, (chartBox?.y || 0) + 238);
+  await expect(stopLabel).toBeVisible();
+  await page.mouse.move((chartBox?.x || 0) + 100, (chartBox?.y || 0) + 60);
+  await expect(stopLabel).toBeVisible();
+  await page.mouse.click((chartBox?.x || 0) + (chartBox?.width || 0) - 100, (chartBox?.y || 0) + 238);
+  await page.mouse.move((chartBox?.x || 0) + 100, (chartBox?.y || 0) + 60);
+  await expect(stopLabel).toHaveCount(0);
 });
