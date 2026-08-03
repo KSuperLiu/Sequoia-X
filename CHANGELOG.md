@@ -14,6 +14,14 @@
 
 - 扩展 K 线止损标签测试，覆盖默认隐藏、悬停显示和点击固定状态。
 
+### 发布信息
+
+- 目标环境：生产服务器 `/opt/sequoia-x`，公网入口 `http://172.93.187.65/`。
+- 发布路径：功能分支 `codex/stop-line-interaction` 的提交 `60d899e` 通过 PR #10 合并至生产分支 `codex/sequoia-trading-tracker`，生产部署提交为 `ecc2bffba463a05ed2aff4c7242977adcb40ea0e`。
+- 部署前一致性备份：`sequoia_app_predeploy_20260803_203824.db`、`sequoia_v2_predeploy_20260803_203824.db`。
+- 数据库迁移：本版本无新增迁移，生产数据库保持版本 5 `personal_review_journal`。
+- 部署验收：API、Worker、Web 容器均正常运行，应用包版本为 2.3.2，公网健康检查正常，行情最新日期为 `2026-08-03`，日常任务保持 `SUCCEEDED`；发布前后端分别通过 42 项和 16 项测试，公网实测止损标签默认隐藏、悬停显示、点击固定及再次点击关闭均正常。
+
 ## 2.3.1 - 2026-08-03
 
 ### 新增
