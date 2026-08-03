@@ -44,7 +44,7 @@ test("个人复盘日记可使用模板并保存完成状态", async ({ page }) 
   await page.route("**/api/v1/journal**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    if (path === "/api/v1/journal/context/2026-07-22") return route.fulfill({ json: context });
+    if (path.startsWith("/api/v1/journal/context/")) return route.fulfill({ json: context });
     if (path === "/api/v1/journal" && request.method() === "POST") {
       saved = request.postDataJSON();
       return route.fulfill({ status: 201, json: { id: 9 } });
@@ -285,7 +285,7 @@ test("运行中的回测可以查看进度日志并提交中止请求", async ({
 
 test("候选列表按 A 股习惯显示反弹红色和回撤绿色", async ({ page }) => {
   await page.route("**/api/v1/candidates/search**", (route) => route.fulfill({ json: {
-    items: [{ id: 1, symbol: "600763", name: "通策医疗", industry: "医疗服务", trade_date: "2026-07-18", strategies: ["TurtleTradeStrategy"], consensus_count: 1, confidence: "MEDIUM", drawdown_60: 0.2, rebound_60: 0.15, volume_ratio: 1.5, total_score: 7, real_close: 36.64, pe_ttm: 25, current_zone: "LEFT", zone: "LEFT", current_entry_low: 35, current_entry_high: 37, current_stop_price: 34, lifecycle_status: "NEW", plan_status: "DRAFT" }],
+    items: [{ id: 1, symbol: "600763", name: "通策医疗", industry: "C17 医疗健康服务与专科医院", market_cap: 123_400_000_000, trade_date: "2026-07-18", strategies: ["TurtleTradeStrategy"], consensus_count: 1, confidence: "MEDIUM", drawdown_60: 0.2, rebound_60: 0.15, volume_ratio: 1.5, total_score: 7, real_close: 36.64, pe_ttm: 25, current_zone: "LEFT", zone: "LEFT", current_entry_low: 35, current_entry_high: 37, current_stop_price: 34, lifecycle_status: "NEW", plan_status: "DRAFT" }],
     total: 1, page: 1, page_size: 30,
   } }));
 
@@ -295,4 +295,8 @@ test("候选列表按 A 股习惯显示反弹红色和回撤绿色", async ({ pa
   await expect(row.locator(".market-up")).toHaveText("+15.0%");
   await expect(row.locator(".market-down")).toHaveCSS("color", "rgb(34, 169, 107)");
   await expect(row.locator(".market-up")).toHaveCSS("color", "rgb(229, 72, 64)");
+  await expect(row.getByText("1234亿")).toBeVisible();
+  await expect(row.locator(".industry-label")).toHaveAttribute("title", "医疗健康服务与专科医院");
+  await expect(row.locator(".industry-label")).not.toContainText("C17");
+  await expect(row.locator(".industry-label")).toHaveCSS("text-overflow", "ellipsis");
 });

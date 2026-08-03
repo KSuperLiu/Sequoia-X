@@ -95,6 +95,63 @@ def test_guest_can_read_business_data_but_not_admin_endpoints(tmp_path: Path) ->
     assert client.post("/api/v1/runs/trigger").status_code == 401
 
 
+def test_candidate_list_includes_local_market_cap(tmp_path: Path) -> None:
+    market_db = tmp_path / "market.db"
+    with sqlite3.connect(market_db) as conn:
+        conn.execute(
+            "CREATE TABLE stock_market_cap("
+            "symbol TEXT PRIMARY KEY,name TEXT,market_cap REAL,updated_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO stock_market_cap VALUES ('600763','通策医疗',2000000000000,'2026-07-23')"
+        )
+    settings = Settings(
+        db_path=str(market_db),
+        app_db_path=str(tmp_path / "app.db"),
+        feishu_webhook_url="https://example.com/hook",
+        admin_username="admin",
+        admin_password="test-password-123",
+        cookie_secure=False,
+    )
+    app = create_app(settings)
+    db = app.state.journal.db
+    rule_id, _ = db.active_rule()
+    now = "2026-07-23T10:00:00+00:00"
+    with db.transaction() as conn:
+        run_id = conn.execute(
+            "INSERT INTO pipeline_run("
+            "trade_date,rule_version_id,status,data_fresh,started_at) VALUES (?,?,?,?,?)",
+            ("2026-07-23", rule_id, "SUCCEEDED", 1, now),
+        ).lastrowid
+        candidate_id = conn.execute(
+            "INSERT INTO candidate("
+            "run_id,trade_date,symbol,name,industry,strategies_json,consensus_count,"
+            "confidence,score_drawdown,score_rebound,score_ma,score_volume,total_score,"
+            "real_close,zone,rationale,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                run_id, "2026-07-23", "600763", "通策医疗", "C17 医疗服务",
+                '["TurtleTradeStrategy"]', 1, "MEDIUM", 3, 2, 2, 1, 8,
+                36.64, "LEFT", "测试候选", now, now,
+            ),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO trade_plan("
+            "candidate_id,original_zone,current_zone,status,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (candidate_id, "LEFT", "LEFT", "DRAFT", now, now),
+        )
+
+    client = TestClient(app)
+    response = client.get("/api/v1/candidates/search")
+    assert response.status_code == 200
+    assert response.json()["items"][0]["market_cap"] == 2_000_000_000_000
+    exported = client.get("/api/v1/candidates/export.csv")
+    assert exported.status_code == 200
+    assert "总市值" in exported.text
+    assert "2000000000000" in exported.text
+
+
 def test_backtest_cancel_api_and_detail_logs(tmp_path: Path) -> None:
     settings = Settings(
         db_path=str(tmp_path / "market.db"),
