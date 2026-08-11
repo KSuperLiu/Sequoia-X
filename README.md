@@ -14,16 +14,20 @@ Sequoia-X V2 是面向 A 股市场的量化选股系统，基于现代 Python �
 
 ---
 
-## 两种运行模式
+## 运行模式
 
 ```bash
-python main.py               # 日常模式：8进程增量补数据 + 跑策略 + 飞书推送（2~3分钟）
-python main.py --backfill     # 回填模式：按本地市值门槛回填历史K线
+python main.py                         # 日常模式：增量行情 + 策略 + 追踪日报
+python main.py --backfill              # 按本地市值门槛回填历史 K 线
+python main.py --refresh-market-cap    # 手动刷新本地总市值表
+python main.py --refresh-financials    # 刷新跟踪股票的季度财务与近两年 PE/PB
 ```
 
 ## Web 交易追踪系统
 
-Web 系统在原有选股链路之上提供四维评分、真实价交易计划、候选追踪、模拟/实盘账本、HTML 日报和基础回测。历史行情仍存放在 `data/sequoia_v2.db`，新增业务数据独立存放在 `data/sequoia_app.db`。
+Web 系统在原有选股链路之上提供四维评分、真实价交易计划、候选追踪、模拟/实盘账本、HTML 日报、基础回测和基本面估值。历史行情仍存放在 `data/sequoia_v2.db`，新增业务数据独立存放在 `data/sequoia_app.db`。
+
+股票详情页的基本面估值覆盖最新已公告季度指标、近两年 PE/PB 曲线与历史百分位，以及 PE/PB/PS 悲观、基准、乐观三情景合理价。刷新季度财务时，系统会为盈利为正且 PE 样本充足的股票自动生成 PE 参考估值：预测 EPS 使用最新 TTM EPS 和限幅利润增速，三档倍数采用近两年 PE 的 25%、50%和 75%分位。管理员可修订系统参考或创建 PE/PB/PS 人工估值，每次修订生成新版本，且后续自动刷新不会覆盖人工版本。财报读取按公告日过滤，避免在历史时点提前使用尚未公开的数据。季度数据来自 Baostock，覆盖当期候选、自选股和有成交记录的股票，可从“任务中心 → 刷新季度财务”执行。
 
 ### 本机开发启动
 
@@ -145,7 +149,7 @@ python main.py
 
 ```
 Sequoia-X/
-├── main.py                      # 入口：argparse 分发日常/回填模式
+├── main.py                      # 日常、回填、市值及季度财务任务入口
 ├── pyproject.toml               # 依赖声明 + ruff/pytest 配置
 ├── .env.example                 # 环境变量模板
 ├── data/                        # SQLite 数据库（运行时生成，不入 git）
@@ -175,6 +179,8 @@ Sequoia-X/
 - **复权方式**：后复权（hfq）— 历史价格不变，适合增量存储，避免除权导致数据错乱
 - **存储**：本地 SQLite（`data/sequoia_v2.db`），可直接拷贝到其他机器使用
 - **日常增量**：8 进程并行通过 baostock 拉取，2~3 分钟完成全市场更新
+- **季度财务**：Baostock 利润、成长、偿债和现金流指标；累计季度数据转换为 TTM，并保留公告日和原始响应
+- **估值历史**：Baostock 不复权日线中的 PE TTM、PB MRQ，默认保留并展示近两年数据
 
 ---
 

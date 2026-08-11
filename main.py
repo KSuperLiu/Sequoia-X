@@ -1,8 +1,10 @@
 """Sequoia-X V2 主程序入口。
 
-两种运行模式：
-  python main.py               # 日常模式：8进程增量补数据 + 跑策略 + 飞书推送（2~3分钟）
-  python main.py --backfill    # 回填模式：只拉取本地市值表中 >=50亿股票的历史K线
+运行模式：
+  python main.py                         # 日常行情、策略、追踪与飞书推送
+  python main.py --backfill              # 回填本地市值门槛内股票的历史 K 线
+  python main.py --refresh-market-cap    # 刷新本地市值表
+  python main.py --refresh-financials    # 刷新跟踪股票季度财务与估值历史
 """
 
 import argparse
@@ -29,6 +31,7 @@ from sequoia_x.strategy.rps_breakout import RpsBreakoutStrategy
 from sequoia_x.strategy.private_placement import PrivatePlacementStrategy
 from sequoia_x.app.db import AppDatabase
 from sequoia_x.app.pipeline import DailyTrackingService
+from sequoia_x.app.valuation import ValuationService
 
 
 def main() -> None:
@@ -42,6 +45,11 @@ def main() -> None:
         "--refresh-market-cap",
         action="store_true",
         help="联网刷新本地股票市值表，供后续采集离线过滤使用",
+    )
+    parser.add_argument(
+        "--refresh-financials",
+        action="store_true",
+        help="刷新候选、自选和持仓股票的季度财务与近两年 PE/PB 历史",
     )
     args = parser.parse_args()
 
@@ -64,6 +72,19 @@ def main() -> None:
 
         # 3. 初始化数据引擎
         engine = DataEngine(settings)
+
+        if args.refresh_financials:
+            app_db = app_db or AppDatabase(settings.app_db_path)
+            result = ValuationService(app_db, engine).refresh_tracked()
+            logger.info(
+                "季度财务刷新完成：覆盖 %s 只，财报 %s 条，估值历史 %s 条，"
+                "自动估值 %s 个，失败 %s 只",
+                result["symbols"], result["fundamentals"], result["history_rows"],
+                result["auto_cases"], result["failed"],
+            )
+            if result["failed"]:
+                raise RuntimeError(f"季度财务刷新存在 {result['failed']} 只失败股票")
+            return
 
         if args.refresh_market_cap:
             count = engine.refresh_market_cap_table()

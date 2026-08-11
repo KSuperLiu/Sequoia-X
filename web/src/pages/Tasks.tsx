@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Coins, History, Play, RefreshCw, RotateCcw, ScrollText, Square } from "lucide-react";
+import { Coins, FileSpreadsheet, History, Play, RefreshCw, RotateCcw, ScrollText, Square } from "lucide-react";
 import { api } from "../api";
 import { Modal, PageHeader, StatusBadge } from "../components/Ui";
 import { useToast } from "../components/Toast";
@@ -8,6 +8,7 @@ import { JobRun } from "../types";
 const jobMeta = {
   DAILY_UPDATE: { title: "日常数据更新", description: "拉取最新日线、执行策略、生成候选与日报", icon: RefreshCw },
   REFRESH_MARKET_CAP: { title: "刷新市值表", description: "联网更新本地市值快照，日跑本身不会自动刷新", icon: Coins },
+  REFRESH_FINANCIALS: { title: "刷新季度财务", description: "更新候选、自选和持仓股财务及近两年 PE/PB 历史", icon: FileSpreadsheet },
   BACKFILL: { title: "历史行情回填", description: "按当前市值股票池回填历史 K 线，耗时较长", icon: History },
 } as const;
 

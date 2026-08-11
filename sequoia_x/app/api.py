@@ -9,7 +9,7 @@ import sqlite3
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
@@ -43,6 +43,7 @@ from sequoia_x.app.jobs import (
 from sequoia_x.app.journal import JournalError, JournalService
 from sequoia_x.app.ledger import LedgerError, LedgerService
 from sequoia_x.app.scoring import suggested_quantity
+from sequoia_x.app.valuation import ValuationService
 from sequoia_x.core.config import Settings, get_settings
 from sequoia_x.data.engine import DataEngine
 
@@ -148,8 +149,25 @@ class PositionRiskInput(BaseModel):
 
 
 class JobInput(BaseModel):
-    job_type: Literal["DAILY_UPDATE", "REFRESH_MARKET_CAP", "BACKFILL"]
+    job_type: Literal["DAILY_UPDATE", "REFRESH_MARKET_CAP", "REFRESH_FINANCIALS", "BACKFILL"]
     confirmation: str = ""
+
+
+class ValuationCaseInput(BaseModel):
+    method: Literal["PE", "PB", "PS"]
+    forecast_period: str = Field(min_length=2, max_length=20)
+    forecast_value: float = Field(gt=0)
+    bear_multiple: float = Field(gt=0)
+    base_multiple: float = Field(gt=0)
+    bull_multiple: float = Field(gt=0)
+    thesis: str = Field(default="", max_length=4000)
+    catalysts: list[Annotated[str, Field(max_length=500)]] = Field(
+        default_factory=list, max_length=20
+    )
+    risks: list[Annotated[str, Field(max_length=500)]] = Field(
+        default_factory=list, max_length=20
+    )
+    source_note: str = Field(default="", max_length=2000)
 
 
 class PasswordInput(BaseModel):
@@ -186,7 +204,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Sequoia-X API",
-        version="2.3.2",
+        version="2.4.0",
         lifespan=lifespan,
         docs_url="/docs" if settings.enable_api_docs else None,
         redoc_url=None,
@@ -199,6 +217,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.ledger = LedgerService(app_db)
     app.state.backtest = BacktestService(app_db, engine)
     app.state.journal = JournalService(app_db)
+    app.state.valuation = ValuationService(app_db, engine)
 
     def enrich_market_caps(rows: list[dict[str, Any]]) -> None:
         symbols = list({str(row["symbol"]) for row in rows if row.get("symbol")})
@@ -870,7 +889,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "account_id": account["id"],
                     "account_name": account.get("display_name") or account["name"],
                 })
-        return {"symbol": symbol, "profile": profile, "snapshot": snapshot, "bars": bars, "candidates": candidates_history, "fills": fills, "watchlist": watch, "positions": positions}
+        return {
+            "symbol": symbol,
+            "profile": profile,
+            "snapshot": snapshot,
+            "bars": bars,
+            "candidates": candidates_history,
+            "fills": fills,
+            "watchlist": watch,
+            "positions": positions,
+            "valuation": app.state.valuation.detail(symbol),
+        }
+
+    @app.get("/api/v1/stocks/{symbol}/valuation")
+    def stock_valuation(symbol: str) -> dict[str, Any]:
+        return app.state.valuation.detail(symbol)
+
+    @app.post("/api/v1/stocks/{symbol}/valuation-cases", status_code=201)
+    def create_valuation_case(
+        symbol: str,
+        payload: ValuationCaseInput,
+        user: dict[str, Any] = Depends(require_admin_csrf),
+    ) -> dict[str, Any]:
+        try:
+            result = app.state.valuation.create_case(symbol, payload.model_dump(), user["username"])
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        active = result.get("active_case") or {}
+        app_db.audit(
+            user["username"], "CREATE_VALUATION_CASE", "valuation_case",
+            active.get("id"), {"symbol": symbol, "version": active.get("version")},
+        )
+        return result
 
     @app.get("/api/v1/accounts")
     def accounts(

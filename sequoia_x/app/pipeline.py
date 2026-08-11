@@ -10,9 +10,10 @@ from typing import Any
 
 from sequoia_x.app.db import AppDatabase, utc_now
 from sequoia_x.app.domain import PlanStatus, PositionZone, RunStatus
-from sequoia_x.app.market import MarketEnricher
 from sequoia_x.app.ledger import LedgerService
+from sequoia_x.app.market import MarketEnricher
 from sequoia_x.app.scoring import score_candidate
+from sequoia_x.app.valuation import ValuationService
 from sequoia_x.core.logger import get_logger
 from sequoia_x.data.engine import DataEngine
 
@@ -24,6 +25,7 @@ class DailyTrackingService:
         self.app_db = app_db
         self.engine = engine
         self.market = MarketEnricher(app_db, engine)
+        self.valuation = ValuationService(app_db, engine)
 
     def persist(
         self,
@@ -57,6 +59,8 @@ class DailyTrackingService:
         expected_date = self._expected_trade_date()
         calendar_fresh = expected_date is None or trade_date == expected_date
         quotes = self.market.fetch_quotes(quote_symbols, trade_date)
+        # 行情快照已经落库后，按最新收盘价重算所有启用中的估值方案。
+        self.valuation.refresh_active_results()
         self.market.refresh_profiles(quote_symbols)
         profiles = {
             row["symbol"]: row

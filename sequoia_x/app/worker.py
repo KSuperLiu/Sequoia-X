@@ -107,6 +107,8 @@ def _record_output(app_db: AppDatabase, job_id: int, line: str, cancelling: bool
     stage = "执行主流程"
     if "市值" in line:
         stage = "刷新市值"
+    elif "财务" in line or "估值历史" in line:
+        stage = "刷新季度财务"
     elif "行情" in line or "K线" in line:
         stage = "更新行情"
     elif "策略" in line:
@@ -124,6 +126,7 @@ def run_job(app_db: AppDatabase, job: dict[str, object]) -> int:
     commands = {
         "DAILY_UPDATE": [],
         "REFRESH_MARKET_CAP": ["--refresh-market-cap"],
+        "REFRESH_FINANCIALS": ["--refresh-financials"],
         "BACKFILL": ["--backfill"],
     }
     job_type = str(job["job_type"])

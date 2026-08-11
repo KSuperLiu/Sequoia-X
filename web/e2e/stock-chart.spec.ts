@@ -36,6 +36,7 @@ test("K 线止损标签显示完整价格和距最新价百分比", async ({ pag
   const chart = page.getByRole("img", { name: "股票K线图，止损 18.70 · 距最新价 -3.8%" });
   await expect(chart).toBeVisible();
   await expect(chart).toHaveAttribute("aria-label", "股票K线图，止损 18.70 · 距最新价 -3.8%");
+  await chart.scrollIntoViewIfNeeded();
   const stopLabel = page.locator(".stock-chart-stop-label");
   await expect(stopLabel).toHaveCount(0);
   const chartBox = await chart.boundingBox();

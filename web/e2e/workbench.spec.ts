@@ -157,6 +157,26 @@ test("网页手动任务可以从任务中心中止", async ({ page }) => {
   expect(cancelCalled).toBe(true);
 });
 
+test("最低总市值以亿元显示并按元保存", async ({ page }) => {
+  let submitted: Record<string, unknown> | null = null;
+  await page.route("**/api/v1/settings", async (route) => {
+    if (route.request().method() === "PUT") {
+      submitted = route.request().postDataJSON();
+      return route.fulfill({ json: { ok: true } });
+    }
+    return route.fallback();
+  });
+
+  await page.goto("/settings");
+  const marketCap = page.getByLabel("最低总市值（亿元）");
+  await expect(marketCap).toHaveValue("50");
+  await marketCap.fill("55");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+
+  await expect(page.getByText("系统设置已保存")).toBeVisible();
+  expect(submitted?.min_market_cap).toBe(5_500_000_000);
+});
+
 test("手机端底部菜单保持可见并可横向浏览", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/dashboard");
@@ -295,6 +315,7 @@ test("候选列表按 A 股习惯显示反弹红色和回撤绿色", async ({ pa
   await expect(row.locator(".market-up")).toHaveText("+15.0%");
   await expect(row.locator(".market-down")).toHaveCSS("color", "rgb(34, 169, 107)");
   await expect(row.locator(".market-up")).toHaveCSS("color", "rgb(229, 72, 64)");
+  await expect(row.locator(".negative")).toHaveCSS("color", "rgb(34, 169, 107)");
   await expect(row.getByText("1234亿")).toBeVisible();
   await expect(row.locator(".industry-label")).toHaveAttribute("title", "医疗健康服务与专科医院");
   await expect(row.locator(".industry-label")).not.toContainText("C17");

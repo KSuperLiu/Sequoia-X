@@ -69,6 +69,12 @@ def test_daily_pipeline_persists_candidate_report_and_is_idempotent(
         },
     )
     monkeypatch.setattr(service.market, "refresh_profiles", lambda symbols: None)
+    valuation_refreshes: list[bool] = []
+    monkeypatch.setattr(
+        service.valuation,
+        "refresh_active_results",
+        lambda: valuation_refreshes.append(True),
+    )
     raw = {"TurtleTradeStrategy": ["600001"]}
     filtered = {
         "TurtleTradeStrategy": FilterDecision(
@@ -82,6 +88,7 @@ def test_daily_pipeline_persists_candidate_report_and_is_idempotent(
     assert second["run_id"] == first["run_id"]
     assert app_db.query_one("SELECT COUNT(*) count FROM pipeline_run")["count"] == 1
     assert app_db.query_one("SELECT COUNT(*) count FROM candidate")["count"] == 1
+    assert len(valuation_refreshes) == 2
     report = app_db.query_one("SELECT html FROM daily_report")
     assert report and "测试股份" in report["html"]
 

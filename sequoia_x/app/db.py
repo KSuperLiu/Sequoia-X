@@ -103,6 +103,81 @@ CREATE TABLE IF NOT EXISTS market_snapshot (
 );
 CREATE INDEX IF NOT EXISTS idx_snapshot_date ON market_snapshot(date);
 
+CREATE TABLE IF NOT EXISTS fundamental_snapshot (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    report_period TEXT NOT NULL,
+    announcement_date TEXT NOT NULL,
+    fiscal_year INTEGER NOT NULL,
+    fiscal_quarter INTEGER NOT NULL,
+    revenue REAL,
+    net_profit REAL,
+    revenue_ttm REAL,
+    net_profit_ttm REAL,
+    eps_ttm REAL,
+    total_shares REAL,
+    roe REAL,
+    gross_margin REAL,
+    net_margin REAL,
+    yoy_net_profit REAL,
+    yoy_eps REAL,
+    current_ratio REAL,
+    quick_ratio REAL,
+    cash_ratio REAL,
+    liability_to_asset REAL,
+    cfo_to_revenue REAL,
+    cfo_to_net_profit REAL,
+    source TEXT NOT NULL,
+    source_payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(symbol, report_period, announcement_date, source)
+);
+CREATE INDEX IF NOT EXISTS idx_fundamental_symbol_period
+ON fundamental_snapshot(symbol, report_period DESC, announcement_date DESC);
+
+CREATE TABLE IF NOT EXISTS valuation_case (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    method TEXT NOT NULL CHECK(method IN ('PE','PB','PS')),
+    forecast_period TEXT NOT NULL,
+    forecast_value REAL NOT NULL CHECK(forecast_value > 0),
+    bear_multiple REAL NOT NULL CHECK(bear_multiple > 0),
+    base_multiple REAL NOT NULL CHECK(base_multiple > 0),
+    bull_multiple REAL NOT NULL CHECK(bull_multiple > 0),
+    thesis TEXT NOT NULL DEFAULT '',
+    catalysts_json TEXT NOT NULL DEFAULT '[]',
+    risks_json TEXT NOT NULL DEFAULT '[]',
+    source_note TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(symbol, version)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_valuation_case
+ON valuation_case(symbol) WHERE is_active=1;
+
+CREATE TABLE IF NOT EXISTS valuation_result (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    valuation_case_id INTEGER NOT NULL REFERENCES valuation_case(id) ON DELETE CASCADE,
+    as_of_date TEXT NOT NULL,
+    current_price REAL NOT NULL,
+    bear_target REAL NOT NULL,
+    base_target REAL NOT NULL,
+    bull_target REAL NOT NULL,
+    margin_of_safety REAL NOT NULL,
+    valuation_zone TEXT NOT NULL,
+    pe_percentile REAL,
+    pb_percentile REAL,
+    pe_sample_count INTEGER NOT NULL DEFAULT 0,
+    pb_sample_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(valuation_case_id, as_of_date)
+);
+CREATE INDEX IF NOT EXISTS idx_valuation_result_case_date
+ON valuation_result(valuation_case_id, as_of_date DESC);
+
 CREATE TABLE IF NOT EXISTS pipeline_run (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_date TEXT NOT NULL,
@@ -581,6 +656,10 @@ class AppDatabase:
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migration(version,name,applied_at) VALUES (5,?,?)",
                 ("personal_review_journal", utc_now()),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migration(version,name,applied_at) VALUES (6,?,?)",
+                ("fundamental_valuation_v1", utc_now()),
             )
             conn.commit()
         self.ensure_default_rule()

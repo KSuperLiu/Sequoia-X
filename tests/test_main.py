@@ -1,6 +1,7 @@
 """主程序入口属性测试。"""
 
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -53,3 +54,38 @@ def test_backfill_uses_filtered_symbols_from_data_engine() -> None:
 
     assert fake_engine is not None
     assert fake_engine.backfill_symbols == ["000001", "600000"]
+
+
+def test_refresh_financials_uses_valuation_service(tmp_path) -> None:
+    """--refresh-financials 应独立执行季度财务刷新并正常结束。"""
+    refreshed: list[bool] = []
+
+    class FakeValuationService:
+        def __init__(self, app_db: object, engine: object) -> None:
+            assert app_db is not None
+            assert engine is not None
+
+        def refresh_tracked(self) -> dict[str, int]:
+            refreshed.append(True)
+            return {
+                "symbols": 1,
+                "fundamentals": 1,
+                "history_rows": 1,
+                "auto_cases": 1,
+                "failed": 0,
+            }
+
+    fake_settings = SimpleNamespace(
+        app_db_path=str(tmp_path / "app.db"),
+        db_path=str(tmp_path / "market.db"),
+        min_market_cap=5_000_000_000,
+    )
+    with (
+        patch.object(sys, "argv", ["main.py", "--refresh-financials"]),
+        patch.object(main_module, "get_settings", return_value=fake_settings),
+        patch.object(main_module, "DataEngine", return_value=object()),
+        patch.object(main_module, "ValuationService", FakeValuationService),
+    ):
+        main_module.main()
+
+    assert refreshed == [True]

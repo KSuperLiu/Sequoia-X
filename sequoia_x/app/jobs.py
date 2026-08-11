@@ -6,7 +6,7 @@ from typing import Any
 
 from sequoia_x.app.db import AppDatabase, utc_now
 
-JOB_TYPES = {"DAILY_UPDATE", "REFRESH_MARKET_CAP", "BACKFILL"}
+JOB_TYPES = {"DAILY_UPDATE", "REFRESH_MARKET_CAP", "REFRESH_FINANCIALS", "BACKFILL"}
 ACTIVE_STATUSES = {"PENDING", "RUNNING"}
 
 
